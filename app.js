@@ -100,25 +100,34 @@ const SCHEMA = (() => {
       { k: 'openTime', l: '展開所要時間', u: 's', min: 0, step: 0.1, show: c => r1(c) || pl(c) },
       { k: 'dtApoWarn', l: '開傘・放出の頂点からのずれ 警告', u: 's', min: 0, step: 0.1 },
     ] },
-    { group: '射点・気象', fields: [
+    { group: '射点・気象', info: 'terrainInfo', fields: [
       { k: 'lat', l: '射点緯度', u: 'deg' },
       { k: 'lon', l: '射点経度', u: 'deg' },
       { k: 'siteAlt', l: '射点標高（海面高度）', u: 'm', step: 10 },
-      { k: 'magDecl', l: '磁気偏角（東偏+ / 西偏−）', u: 'deg', step: 0.1 },
+      { k: 'magMode', l: '磁気偏角の決め方', t: 'select', o: [['manual', '手入力'], ['auto', '自動（WMM2025・打上げ日）']],
+        lf: c => c.magMode === 'auto' && window.Geo ? `磁気偏角の決め方（自動: ${window.Geo.magDecl(c.lat, c.lon, c.siteAlt, window.Geo.decimalYear(c.launchDate)).toFixed(2)}°）` : '磁気偏角の決め方' },
+      { k: 'magDecl', l: '磁気偏角（東偏+ / 西偏−）', u: 'deg', step: 0.1, show: c => c.magMode !== 'auto' },
+      { k: 'launchDate', l: '打上げ日（YYYY-MM-DD）', t: 'text', show: c => c.magMode === 'auto' },
       { k: 'temp', l: '地上気温', u: '℃', step: 1 },
-      { k: 'landSurface', l: '着地面', t: 'select', o: [['site', '射点と同じ標高'], ['sea', '海面（標高 0 m）']] },
+      { k: 'landSurface', l: '着地面', t: 'select', o: [['site', '射点と同じ標高'], ['sea', '海面（標高 0 m）'], ['terrain', '地形（国土地理院 標高タイル）']] },
       { k: 'railLen', l: 'ランチャー長', u: 'm', min: 0.1, step: 0.5 },
-      { k: 'lugAft', l: '後端〜最後尾ランチラグ', u: 'mm', min: 0, step: 5 },
+      { k: 'lugAft', l: '後端〜最後尾（下側）ランチラグ', u: 'mm', min: 0, step: 5 },
+      { k: 'tipOff', l: 'ティップオフ（上側ラグが抜けてから下側ラグを支点に回転）', t: 'check', wide: true },
+      { k: 'lugUpper', l: '後端〜上側ランチラグ', u: 'mm', min: 0, step: 5, show: c => c.tipOff },
       { k: 'elev', l: '射角（90=垂直）', u: 'deg', min: 1, max: 90, step: 1 },
       { k: 'azimRef', l: '打上げ方位の基準', t: 'select', o: REF },
       { k: 'azim', l: '打上げ方位', u: 'deg', step: 5, lf: c => `打上げ方位（${ref(c.azimRef)}, 0=北 90=東）` },
       { k: 'windDirRef', l: '風向の基準', t: 'select', o: REF },
       { k: 'windFrom', l: '風向（吹いてくる方位）', u: 'deg', step: 5, lf: c => `風向・吹いてくる方位（${ref(c.windDirRef)}）` },
-      { k: 'wind', l: '風速', u: 'm/s', min: 0, step: 0.5, lf: c => `風速（高度 ${c.windRef} m）` },
-      { k: 'windRef', l: '風速の基準高さ', u: 'm', min: 0.1, step: 1 },
-      { k: 'windExp', l: 'べき指数 α（=1/n）', min: 0, step: 0.01,
+      { k: 'windModel', l: '風モデル', t: 'select', o: [['power', 'べき法則'], ['profile', '高度別プロファイル（表）']] },
+      { k: 'wind', l: '風速', u: 'm/s', min: 0, step: 0.5, lf: c => `風速（高度 ${c.windRef} m）`, show: c => c.windModel !== 'profile' },
+      { k: 'windRef', l: '風速の基準高さ', u: 'm', min: 0.1, step: 1, show: c => c.windModel !== 'profile' },
+      { k: 'windExp', l: 'べき指数 α（=1/n）', min: 0, step: 0.01, show: c => c.windModel !== 'profile',
         lf: c => `べき指数 α（=1/n）　n = ${c.windExp > 0 ? +(1 / c.windExp).toFixed(2) : '∞'}` },
+      { k: 'windMaxH', l: 'べき法則の上限高度（0=無制限）', u: 'm', min: 0, step: 100, show: c => c.windModel !== 'profile' },
+      { k: 'windProfile', l: '風プロファイル（1行 = 高度m, 風速m/s, 風向deg。風向は上の基準）', t: 'textarea', rows: 4, ph: '0,2,270\n100,5,270\n500,9,260\n1000,12,250', show: c => c.windModel === 'profile' },
       { k: 'gust', l: '乱流（突風）強度', u: 'm/s', min: 0, step: 0.5 },
+      { k: 'earthRot', l: '地球の自転（コリオリ力）と緯度・高度による重力', t: 'check', wide: true },
     ] },
     { group: '空力・計算', fields: [
       { k: 'aeroMode', l: '空力係数', t: 'select', wide: true, o: [['barrowman', 'Barrowman 法で推定'], ['manual', '諸元表の値を直接使う']] },
@@ -132,6 +141,20 @@ const SCHEMA = (() => {
       { k: 'machCorr', l: '圧縮性補正（遷音速抗力・フィン揚力）', t: 'check', wide: true },
       { k: 'aeroTable', l: '空力テーブル（任意。1行 = Mach,Cd[,CNa[,Xcp_mm(先端)]]）', t: 'textarea', rows: 4, ph: '0.1,0.45,11.8,1258\n0.5,0.47' },
       { k: 'dt', l: '積分刻み', u: 'ms', min: 0.5, max: 20, step: 0.5 },
+    ] },
+    { group: '性能閾値（0 で無効）', fields: [
+      { k: 'thMinApogee', l: '最低頂点高度', u: 'm', min: 0, step: 10 },
+      { k: 'thMaxQ', l: '最大動圧の上限', u: 'Pa', min: 0, step: 1000 },
+      { k: 'thMinRailV', l: '最低ランチクリア速度', u: 'm/s', min: 0, step: 1 },
+      { k: 'thMaxRange', l: '着地点距離の上限', u: 'm', min: 0, step: 50 },
+    ] },
+    { group: 'ばらつき補正（モンテカルロ用。通常は既定値）', fields: [
+      { k: 'cnaScale', l: 'CNα 倍率', u: '%', min: 1, step: 1 },
+      { k: 'burnScale', l: '燃焼時間 倍率（力積は一定）', u: '%', min: 1, step: 1 },
+      { k: 'cgShift', l: '乾燥重心のずれ（後方を正）', u: 'mm', step: 1 },
+      { k: 'cpShift', l: '圧力中心のずれ（後方を正）', u: 'mm', step: 1 },
+      { k: 'chuteScale', l: 'パラシュート CdS 倍率', u: '%', min: 0, step: 1 },
+      { k: 'chuteDelay', l: '開傘タイミングのずれ', u: 's', step: 0.1 },
     ] },
   ];
 })();
@@ -168,7 +191,7 @@ let cfgEdit = null;
 // cfg を変更する唯一の経路（spec §6）
 function applyCfg(next, { rewrite = true } = {}) {
   cfg = normalizeCfg({ ...DEFAULTS, ...next }); saveCfg(); if (rewrite) { cfgEdit = null; writeFields(); }
-  window.Dispersion?.markStale(); window.V3D?.markDirty(); scheduleRun();
+  window.Dispersion?.markStale(); window.V3D?.markDirty(); window.Analysis?.markStale(); window.Verify?.markStale(); scheduleRun();
 }
 // 位置の表示⇔cfg（spec §1）。L は常に cfgLenMm(cfg)
 const posDisp = x => cfg.posRef === 'aft' ? +(cfgLenMm(cfg) - x).toFixed(3) : x;
@@ -519,7 +542,7 @@ function renderWarnings() {
   if (!M) { $('#warnings').innerHTML = out.join(''); return; }
   for (const w of M.warn || []) add('warn', '⚠ ' + escHtml(w));
   // 偏角を使う（磁北基準の入力がある）か 0 以外を入れたときだけ警告欄に出す（既定の 0°・真北基準で毎回出るのを避ける）。チェック欄には常に出す
-  const dc = usesDecl() ? declCheck(cfg.lat, cfg.lon, cfg.magDecl) : null; if (dc) add('warn', '⚠ ' + escHtml(dc));
+  const dc = usesDecl() ? declCheck(cfg.lat, cfg.lon, declNow()) : null; if (dc) add('warn', '⚠ ' + escHtml(dc));
   const cp = M.cpAt(0), m0 = M.massAt(0), sm0 = (cp.xcp - m0.cg) / M.d;
   if (sm0 < 0) add('bad', `⛔ 静的に不安定です（安定余裕 ${sm0.toFixed(2)} cal）。CP が CG より前にあります。`);
   else if (sm0 < 1) add('warn', `⚠ 安定余裕が小さい（${sm0.toFixed(2)} cal、目安 1.0〜2.0 cal 以上）`);
@@ -572,10 +595,13 @@ function renderWarnings() {
   if (hyb && Number.isFinite(rv.ispEff_s) && (rv.ispEff_s < 100 || rv.ispEff_s > 250))
     add('warn', `⚠ 有効比推力 ${rv.ispEff_s.toFixed(0)} s が範囲外です（ハイブリッドの目安 100〜250 s）。推力履歴・推進剤質量を確認してください`);
   if (M.c.mDia > M.c.d) add('bad', '⛔ モーター径が胴体外径より大きくなっています');
+  for (const th of window.Analysis ? window.Analysis.thresholds(cfg, S) : []) if (!th.ok) add('bad', `⛔ 性能閾値: ${th.l} ${th.limit} ${th.u} を満たしていません（${Number.isFinite(th.value) ? +th.value.toFixed(1) : '—'} ${th.u}）`);
+  if (ev.railExit && Number.isFinite(ev.railExit.tipRate)) add('ok', `ℹ ティップオフ: 下側ラグ離脱時のピッチレート ${ev.railExit.tipRate.toFixed(2)}°/s、頭下げ ${ev.railExit.tipAngle.toFixed(3)}°`);
   if (!out.length) add('ok', '✓ 主要な警告はありません');
   $('#warnings').innerHTML = out.join('');
 }
-function usesDecl() { return cfg.magDecl !== 0 || cfg.azimRef === 'magnetic' || cfg.windDirRef === 'magnetic'; }
+const declNow = () => (model && Number.isFinite(model.magDecl) ? model.magDecl : cfg.magDecl); // 自動（WMM）なら計算値
+function usesDecl() { return declNow() !== 0 || cfg.azimRef === 'magnetic' || cfg.windDirRef === 'magnetic'; }
 // 「諸元表チェック」カード: REVIEW_LABELS の順に reviewValues（位置は後端基準。null は —）、真方位、M.warn、declCheck
 function renderReview() {
   const box = $('#review'), sum = $('#reviewSum'); if (!box || !sum) return;
@@ -583,7 +609,7 @@ function renderReview() {
   if (!M || !rv) { sum.textContent = '諸元表チェック'; box.innerHTML = '<p class="muted small">計算エラーのため表示できません。入力を確認してください。</p>'; return; }
   const fv = v => v == null || (typeof v === 'number' && !Number.isFinite(v)) ? '—' : typeof v === 'number' ? String(+v.toPrecision(6)) : escHtml(v);
   const ta = rv.trueAzim_deg, ref = r => r === 'magnetic' ? '磁北' : '真北';
-  const warns = [...(M.warn || [])], dc = usesDecl() ? declCheck(cfg.lat, cfg.lon, cfg.magDecl) : null; if (dc) warns.push(dc);
+  const warns = [...(M.warn || [])], dc = usesDecl() ? declCheck(cfg.lat, cfg.lon, declNow()) : null; if (dc) warns.push(dc);
   const nW = warns.length + (cfg.thrustKind === 'assumed' ? 1 : 0);
   sum.innerHTML = `諸元表チェック <span class="muted">（審査用計算値・後端基準）</span>　<span class="rv-pill">真方位 ${f1(ta)}°</span>`
     + (Number.isFinite(rv.fstWet_pct) ? `<span class="rv-pill">Fst ${f1(rv.fstWet_pct)} %</span>` : '')
@@ -854,89 +880,6 @@ function drawCharts() {
   });
 }
 
-// ---- モンテカルロ ----
-const MC_FIELDS = [
-  ['n', '試行回数', 100], ['sWind', '風速ばらつき σ [%]', 30], ['sDir', '風向ばらつき σ [deg]', 20], ['sThr', '推力ばらつき σ [%]', 3],
-  ['sCd', 'Cd ばらつき σ [%]', 8], ['sMass', '質量ばらつき σ [%]', 2], ['sElev', '射角ばらつき σ [deg]', 1], ['sAz', '方位ばらつき σ [deg]', 3],
-];
-let mcData = null, mcBusy = false;
-function buildMcForm() {
-  $('#mcForm').innerHTML = MC_FIELDS.map(([k, l, v]) => `<label class="field"><span>${l}</span><input type="number" id="mc_${k}" value="${v}" step="any"></label>`).join('');
-}
-async function runMc() {
-  if (mcBusy) return; mcBusy = true;
-  const p = Object.fromEntries(MC_FIELDS.map(([k]) => [k, +$('#mc_' + k).value || 0]));
-  const n = Math.min(2000, Math.max(1, Math.round(p.n)));
-  const rng = mulberry32(20261008), res = [], base = normalizeCfg(cfg);
-  const massKey = base.massMode === 'hybrid' ? 'hDryMass' : 'airMass';   // hybrid は乾燥質量をばらつかせる
-  for (let i = 0; i < n; i++) {
-    const c = { ...base };
-    c.wind = Math.max(0, c.wind * (1 + p.sWind / 100 * gauss(rng)));
-    c.windFrom += p.sDir * gauss(rng);
-    c.thrustScale *= 1 + p.sThr / 100 * gauss(rng);
-    c.cdScale *= Math.max(0.1, 1 + p.sCd / 100 * gauss(rng));
-    c[massKey] *= Math.max(0.1, 1 + p.sMass / 100 * gauss(rng));
-    c.elev = Math.min(90, c.elev + p.sElev * gauss(rng));
-    c.azim += p.sAz * gauss(rng);
-    try {
-      const s = simulate(buildModel(c), { seed: i + 7, record: false });
-      if (s.ev.landing) res.push({ x: s.ev.landing.x, y: s.ev.landing.y, apo: s.st.apogee, v: s.ev.landing.V });
-    } catch (e) { console.error(e); }
-    if (i % 5 === 4) { $('#mcProg').textContent = `${i + 1} / ${n}`; await new Promise(r => setTimeout(r)); }
-  }
-  $('#mcProg').textContent = `${res.length} / ${n} 完了`;
-  mcData = res; mcBusy = false; drawMc();
-}
-function drawMc() {
-  // タブが非表示だと canvas の幅が 0 で楕円の半径が負になる（表示時に redrawVisible が描く）
-  if (!mcData || !mcData.length || !$('#tab-mc').classList.contains('on')) return;
-  const d = mcData;
-  // 散布図
-  const cv = $('#cvMcMap'), { ctx, w, h } = prep(cv);
-  let x0 = 0, x1 = 0, y0 = 0, y1 = 0;
-  for (const p of d) { x0 = Math.min(x0, p.x); x1 = Math.max(x1, p.x); y0 = Math.min(y0, p.y); y1 = Math.max(y1, p.y); }
-  const mx = d.reduce((a, p) => a + p.x, 0) / d.length, my = d.reduce((a, p) => a + p.y, 0) / d.length;
-  let sxx = 0, syy = 0, sxy = 0;
-  for (const p of d) { sxx += (p.x - mx) ** 2; syy += (p.y - my) ** 2; sxy += (p.x - mx) * (p.y - my); }
-  sxx /= d.length; syy /= d.length; sxy /= d.length;
-  const tr = sxx + syy, det = sxx * syy - sxy * sxy, l1 = tr / 2 + Math.sqrt(Math.max(0, tr * tr / 4 - det)), l2 = Math.max(0, tr - l1);
-  const ang = Math.atan2(l1 - sxx, sxy || 1e-12);
-  const k = Math.sqrt(5.991); // 95% 楕円
-  const ea = k * Math.sqrt(l1), eb = k * Math.sqrt(l2);
-  const ex = Math.abs(ea * Math.cos(ang)) + Math.abs(eb * Math.sin(ang)), ey = Math.abs(ea * Math.sin(ang)) + Math.abs(eb * Math.cos(ang));
-  x0 = Math.min(x0, mx - ex); x1 = Math.max(x1, mx + ex); y0 = Math.min(y0, my - ey); y1 = Math.max(y1, my + ey);
-  const m = Math.max(x1 - x0, y1 - y0, 20) * 0.08, pad = { pl: 50, pr: 12, pt: 20, pb: 30 };
-  const { xr, yr } = equalRanges(w, h, x0 - m, x1 + m, y0 - m, y1 + m, pad);
-  const F = gridFrame(ctx, w, h, xr, yr, pad, '東 [m] →');
-  ctx.fillStyle = CHART_CSS.text; ctx.textAlign = 'left'; ctx.fillText('↑ 北 [m]　着地点分布と 95% 楕円', 4, 14);
-  ctx.fillStyle = '#ff6b8b99';
-  for (const p of d) { ctx.beginPath(); ctx.arc(F.X(p.x), F.Y(p.y), 2.5, 0, 7); ctx.fill(); }
-  const sc = (F.X(1) - F.X(0));
-  ctx.strokeStyle = '#ffd36b'; ctx.lineWidth = 1.5; ctx.beginPath();
-  ctx.ellipse(F.X(mx), F.Y(my), ea * sc, eb * sc, -ang, 0, Math.PI * 2); ctx.stroke();
-  ctx.fillStyle = '#fff'; ctx.beginPath(); ctx.arc(F.X(0), F.Y(0), 4, 0, 7); ctx.fill(); ctx.fillText('射点', F.X(0) + 6, F.Y(0) - 4);
-  windArrow(ctx, w - 50, pad.pt + 34);
-  // ヒストグラム
-  const apos = d.map(p => p.apo).sort((a, b) => a - b);
-  const cv2 = $('#cvMcHist'), H = prep(cv2);
-  const lo = apos[0], hi = apos[apos.length - 1], nb = Math.min(30, Math.max(8, Math.round(Math.sqrt(d.length))));
-  const bw = (hi - lo) / nb || 1, bins = new Array(nb).fill(0);
-  for (const a of apos) bins[Math.min(nb - 1, Math.floor((a - lo) / bw))]++;
-  const xr2 = nice(lo, hi + (hi === lo ? 1 : 0), 6), yr2 = nice(0, Math.max(...bins), 4);
-  const F2 = frame(H.ctx, H.w, H.h, xr2, yr2, { title: '頂点高度の分布 [m]', xlabel: '頂点高度 [m]' });
-  H.ctx.fillStyle = '#7aa2ffaa';
-  bins.forEach((b, i) => { const xa = F2.X(lo + i * bw), xb = F2.X(lo + (i + 1) * bw); H.ctx.fillRect(xa + 1, F2.Y(b), Math.max(1, xb - xa - 2), F2.Y(0) - F2.Y(b)); });
-  // 統計
-  const mean = a => a.reduce((s, v) => s + v, 0) / a.length, sd = a => { const m = mean(a); return Math.sqrt(mean(a.map(v => (v - m) ** 2))); };
-  const dists = d.map(p => Math.hypot(p.x, p.y)).sort((a, b) => a - b);
-  const q = (a, f) => a[Math.min(a.length - 1, Math.floor(f * a.length))];
-  $('#mcStats').innerHTML = [
-    ['頂点高度', `${mean(apos).toFixed(0)} ± ${sd(apos).toFixed(0)} m（${apos[0].toFixed(0)}〜${hi.toFixed(0)}）`],
-    ['落下距離 平均', `${mean(dists).toFixed(0)} m`], ['落下距離 95%', `${q(dists, 0.95).toFixed(0)} m 以内`], ['最大', `${dists[dists.length - 1].toFixed(0)} m`],
-    ['95% 楕円', `${(2 * ea).toFixed(0)} × ${(2 * eb).toFixed(0)} m`], ['着地速度 平均', `${mean(d.map(p => p.v)).toFixed(1)} m/s`],
-  ].map(([k, v]) => `<span>${k} <b>${v}</b></span>`).join('');
-}
-
 // ---- パラメータ掃引 ----
 let swData = null;
 function buildSweep() {
@@ -1031,7 +974,7 @@ function initSpecButtons() {
       const f = FIELDS.find(f => f.k === k);
       return { key: k, label: f?.l ?? k, value: k === 'engText' ? `推力表 ${String(v).trim().split('\n').length} 行` : v, unit: f?.pos ? 'mm(先端)' : f?.u ?? '' };
     });
-    const dc = declCheck(cfg.lat, cfg.lon, cfg.magDecl);
+    const dc = declCheck(cfg.lat, cfg.lon, declNow());
     showImportPanel('Debug 諸元を読み込みました', { imported, supplemented: sup, warnings: dc ? [dc] : [] });
   });
   $('#btnSpecExport').addEventListener('click', async () => {
@@ -1044,9 +987,36 @@ function initSpecButtons() {
   });
 }
 
+// ---------------- 地形（terrain.js 連携） ----------------
+function initTerrain() {
+  const el = $('#terrainInfo'); if (!el) return;
+  if (!window.Terrain) { el.textContent = 'terrain.js を読み込めませんでした（地形は使えません）'; return; }
+  el.innerHTML = '地形: 国土地理院の標高タイル（日本国内のみ）を射点のまわりで取得します。<br>半径 <input type="number" id="trR" value="3000" min="200" max="20000" step="500" style="width:90px"> m <button type="button" id="trGo">地形を取得</button> <span id="trSt"></span>';
+  $('#trGo').addEventListener('click', async () => {
+    const st = $('#trSt'), b = $('#trGo'); b.disabled = true;
+    try {
+      const r = await window.Terrain.prefetch(cfg.lat, cfg.lon, Math.max(200, +$('#trR').value || 3000), (d, n) => { st.textContent = `取得中 ${d}/${n}`; });
+      st.textContent = `${r.ok}/${r.tiles} 枚取得。射点の標高 ${r.center == null ? '—（データ無し）' : r.center.toFixed(1) + ' m'}`;
+      if (cfg.landSurface === 'terrain') applyCfg({ ...cfg }, { rewrite: false });
+    } catch (e) { st.textContent = '失敗: ' + e.message; }
+    b.disabled = false;
+  });
+}
+
 // ---------------- 起動 ----------------
 function init() {
-  buildPanel(); writeFields(); buildMcForm(); buildSweep();
+  buildPanel(); writeFields(); buildSweep();
+  // Magi から移植したタブ（解析・EKF・検算・設計）。読めなければその旨を出す
+  const mountTab = (mod, fn, sel, name) => {
+    const el = $(sel); if (!el) return;
+    if (!window[mod]) { el.innerHTML = `<div class="card"><p class="muted">${name}を読み込めませんでした。</p></div>`; return; }
+    try { window[mod][fn](el); } catch (e) { console.error(e); el.innerHTML = `<div class="card"><p class="muted">${name}の初期化に失敗しました: ${e.message}</p></div>`; }
+  };
+  mountTab('Analysis', 'mountMc', '#tab-mc', 'analysis.js（モンテカルロ・ラプラス近似）');
+  mountTab('Analysis', 'mountEkf', '#tab-ekf', 'analysis.js（EKF）');
+  mountTab('Verify', 'mount', '#tab-verify', 'verify.js（検算）');
+  mountTab('Design', 'mount', '#tab-design', 'design.js（設計ツール）');
+  initTerrain();
   if (window.Dispersion) {
     try { window.Dispersion.mount($('#dispersion')); }
     catch (e) { console.error(e); $('#dispersion').innerHTML = `<p class="muted">落下分散の初期化に失敗しました: ${e.message}</p>`; }
@@ -1055,7 +1025,7 @@ function init() {
   $$('.tabs button').forEach(b => b.addEventListener('click', () => {
     $$('.tabs button').forEach(x => x.classList.toggle('on', x === b));
     $$('.tab').forEach(t => t.classList.toggle('on', t.id === 'tab-' + b.dataset.tab));
-    $('#playerCard').classList.toggle('hide', ['mc', 'sweep', 'disp'].includes(b.dataset.tab));
+    $('#playerCard').classList.toggle('hide', ['mc', 'sweep', 'disp', 'ekf', 'verify', 'design'].includes(b.dataset.tab));
     window.V3D?.setVisible(b.dataset.tab === '3d');
     window.Dispersion?.setVisible(b.dataset.tab === 'disp');
     redrawVisible();
@@ -1068,7 +1038,10 @@ function init() {
     requestAnimationFrame(playLoop);
   });
   $('#scrub').addEventListener('input', e => { seekT(+e.target.value); drawPlay(); });
-  $('#btnMc').addEventListener('click', runMc);
+  $('#btnKml').addEventListener('click', () => {
+    if (!model || !sim || !sim.rec.length || !window.Analysis) return;
+    download(`${String(cfg.name || 'rocket').replace(/[\\/:*?"<>|]/g, '_')}_flight.kml`, window.Analysis.flightKml(model, sim), 'application/vnd.google-earth.kml+xml');
+  });
   $('#btnSweep').addEventListener('click', runSweep);
   $('#btnReset').addEventListener('click', () => { if (!confirm('設定を初期値に戻しますか？')) return; applyCfg({ ...DEFAULTS }); });
   $('#btnExport').addEventListener('click', () => download(`${String(cfg.name || 'rocket').replace(/[\\/:*?"<>|]/g, '_')}-config.json`, cfgJson(cfg, 2), 'application/json'));
@@ -1094,7 +1067,7 @@ function redrawVisible() {
   if (!sim) return;
   drawRocket(); drawFlight();
   if ($('#tab-charts').classList.contains('on')) drawCharts();
-  if ($('#tab-mc').classList.contains('on')) drawMc();
+  window.Analysis?.redraw();
   if ($('#tab-sweep').classList.contains('on')) drawSweep();
 }
 function download(name, text, type) {

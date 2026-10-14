@@ -79,7 +79,8 @@ window.Dispersion = (() => {
 
   // ---------------- 幾何（ENU 平面）— DOM に触れない純関数。Dispersion._geom で公開 ----------------
   // enuToLatLon の逆変換: x = Δlon·RE·cos(lat0), y = Δlat·RE
-  const toENU = (lat0, lon0, lat, lon) => [(lon - lon0) * D * Re() * Math.cos(lat0 * D), (lat - lat0) * D * Re()];
+  const toENU = (lat0, lon0, lat, lon) => typeof latLonToEnu === 'function' ? latLonToEnu(lat0, lon0, lat, lon)
+    : [(lon - lon0) * D * Re() * Math.cos(lat0 * D), (lat - lat0) * D * Re()];
   const toLL = (lat0, lon0, x, y) => typeof enuToLatLon === 'function' ? enuToLatLon(lat0, lon0, x, y)
     : [lat0 + y / Re() / D, lon0 + x / (Re() * Math.cos(lat0 * D)) / D];
   // 風向 fromDeg（吹いてくる方位, 真北基準）の風が流れていく向きの単位ベクトル [東, 北]

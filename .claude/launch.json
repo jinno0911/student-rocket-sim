@@ -1,0 +1,11 @@
+{
+  "version": "0.0.1",
+  "configurations": [
+    {
+      "name": "student-rocket-sim",
+      "runtimeExecutable": "C:/Users/jinno/AppData/Local/Programs/Python/Python312/python.exe",
+      "runtimeArgs": ["-m", "http.server", "8775"],
+      "port": 8775
+    }
+  ]
+}

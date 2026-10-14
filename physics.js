@@ -87,13 +87,20 @@ const PHYS_DEFAULTS = {
   wind: 4, windFrom: 270, windRef: 10, windExp: 0.14, gust: 1.0, landSurface: 'site',
   aeroMode: 'barrowman', cpManual: 1258, cnaManual: 11.8, cmq: -2.96, clp: -0.14, aeroTable: '',
   cdMode: 'auto', cdManual: 0.45, cdScale: 100, machCorr: true, dt: 3,
+  // 以下 Magi から移植した機能（既定値は従来と同じ挙動）
+  magMode: 'manual', launchDate: '2026-10-11',            // 磁気偏角: manual=magDecl / auto=WMM2025（射点・打上げ日）
+  earthRot: false,                                          // 地球の自転（コリオリ力）と正規重力（緯度・高度）
+  tipOff: false, lugUpper: 0,                               // ティップオフ: 上側ラグ（後端から mm）が抜けてから下側ラグ（lugAft）が抜けるまで回転
+  windModel: 'power', windProfile: '', windMaxH: 0,         // 風: べき法則 / 高度別プロファイル（"高度m,風速m/s,風向deg"）、べき法則の上限高度（0=無制限）
+  cnaScale: 100, burnScale: 100, cgShift: 0, cpShift: 0, chuteScale: 100, chuteDelay: 0, // ばらつき（モンテカルロ・ラプラス近似で使用）
+  thMinApogee: 0, thMaxQ: 0, thMinRailV: 0, thMaxRange: 0, // 性能閾値（0 で無効）
 };
 
 // 内部ヘルパー（トップレベル名を増やさないため 1 個にまとめる）
 const PHYS_UTIL = (() => {
   const clamp = (x, a, b) => Math.min(b, Math.max(a, x));
   const ENUMS = {
-    posRef: ['nose', 'aft'], azimRef: ['true', 'magnetic'], windDirRef: ['true', 'magnetic'], landSurface: ['site', 'sea'],
+    posRef: ['nose', 'aft'], azimRef: ['true', 'magnetic'], windDirRef: ['true', 'magnetic'], landSurface: ['site', 'sea', 'terrain'], magMode: ['manual', 'auto'], windModel: ['power', 'profile'],
     massMode: ['motor', 'hybrid'], inertiaMode: ['auto', 'manual'], aeroMode: ['barrowman', 'manual'], thrustKind: ['measured', 'assumed'],
     rec1: ['apogee', 'ignition', 'burnout', 'none'], rec2: ['none', 'altitude', 'ignition'], chuteSpec: ['diameter', 'velocity'],
     cdMode: ['auto', 'manual'], noseShape: ['ogive', 'cone', 'parabolic', 'elliptic'], motorSrc: ['param', 'eng'], mShape: SHAPES.map(s => s[0]),
@@ -209,9 +216,15 @@ function declCheck(lat, lon, magDecl) {
   return `日本の磁気偏角は西偏（本様式では負）。符号を確認してください（現在 ${magDecl}°）`;
 }
 
-// ENU [m] → 緯度経度 [deg]（局所平面近似）
+// ENU [m] → 緯度経度 [deg]（射点の接平面。WGS84 楕円体の子午線曲率半径 M・卯酉線曲率半径 N を使う）
 function enuToLatLon(lat0, lon0, x, y) {
-  return [lat0 + y / RE * 180 / Math.PI, lon0 + x / (RE * Math.cos(lat0 * D2R)) * 180 / Math.PI];
+  const s = Math.sin(lat0 * D2R), w = 1 - 0.00669437999014 * s * s, M = 6378137 * (1 - 0.00669437999014) / w ** 1.5, N = 6378137 / Math.sqrt(w);
+  return [lat0 + y / M * 180 / Math.PI, lon0 + x / (N * Math.cos(lat0 * D2R)) * 180 / Math.PI];
+}
+// 緯度経度 [deg] → ENU [m]（enuToLatLon の逆変換）
+function latLonToEnu(lat0, lon0, lat, lon) {
+  const s = Math.sin(lat0 * D2R), w = 1 - 0.00669437999014 * s * s, M = 6378137 * (1 - 0.00669437999014) / w ** 1.5, N = 6378137 / Math.sqrt(w);
+  return [(lon - lon0) * D2R * N * Math.cos(lat0 * D2R), (lat - lat0) * D2R * M];
 }
 
 // 回転運動の微分: du/dt = ω⊥×u, dω⊥/dt = (τ⊥ − Ir·p·(ω⊥×u))/It, dp/dt = (τ·u)/Ir
@@ -284,8 +297,8 @@ function buildModel(c0) {
     } else W('推力表を読み取れなかったため、パラメトリック曲線を使いました');
   }
   if (!pts) pts = genCurve(c.mShape, c.mI, c.mTb);
-  const ts = c.thrustScale / 100;
-  pts = pts.map(p => [p[0], p[1] * ts]);
+  const ts = c.thrustScale / 100, bs = Math.max(c.burnScale, 1) / 100; // burnScale: 時間を伸縮し総力積は保つ
+  pts = pts.map(p => [p[0] * bs, p[1] * ts / bs]);
   const cum = [0];
   for (let i = 1; i < pts.length; i++) cum.push(cum[i - 1] + (pts[i][1] + pts[i - 1][1]) / 2 * (pts[i][0] - pts[i - 1][0]));
   const Itot = cum[cum.length - 1], tb = pts[pts.length - 1][0];
@@ -336,10 +349,10 @@ function buildModel(c0) {
   };
 
   // --- 質量・重心・慣性 ---
-  const air = c.airMass * gr, airX = c.airCG * mm, bal = c.ballast * gr, balX = c.ballastPos * mm;
+  const air = c.airMass * gr, airX = (c.airCG + c.cgShift) * mm, bal = c.ballast * gr, balX = c.ballastPos * mm;
   const payOn = !!c.payloadOn, mPay = c.payloadMass * gr, xPay = c.payloadPos * mm;
-  const hDry = c.hDryMass * gr, hDryX = c.hDryCG * mm, hOx = c.hOxMass * gr, hOxX = c.hOxCG * mm, hOutX = c.hTankOutlet * mm;
-  const hDf = (c.hFuelPre - c.hFuelPost) * gr, hFuelX = c.hFuelCG * mm, tBurn = c.hBurnTime;
+  const hDry = c.hDryMass * gr, hDryX = (c.hDryCG + c.cgShift) * mm, hOx = c.hOxMass * gr, hOxX = c.hOxCG * mm, hOutX = c.hTankOutlet * mm;
+  const hDf = (c.hFuelPre - c.hFuelPost) * gr, hFuelX = c.hFuelCG * mm, tBurn = c.hBurnTime * bs;
   const tEnd = hyb ? Math.max(tb, tIgn + tBurn) : tb;
   const Idry = manI ? c.Ipitch : hyb ? hDry * L * L / 12 : null; // motor の auto は従来の近似（下で個別に計算）
   const floorHit = { I: false, Ir: false };
@@ -414,6 +427,7 @@ function buildModel(c0) {
     let cna = manA ? c.cnaManual : b.cna, xcp = manA ? c.cpManual * mm : b.xcp;
     if (tab && tab.cna) cna = U.interp(tab.cna, Mn);
     if (tab && tab.xcp) xcp = U.interp(tab.xcp, Mn) * mm;
+    cna *= c.cnaScale / 100; xcp += c.cpShift * mm;
     return { cna, xcp, s0: b.s0, s1: b.s1, s2: b.s2, cnaF: b.cnaF };
   };
   // 減衰係数（L 基準）。モーメント = 0.25·ρ·V_a·A·L²·C·ω
@@ -434,16 +448,45 @@ function buildModel(c0) {
   const vel = c.chuteSpec === 'velocity';
   const cdsV = (mk, vt) => (vt > 0 ? 2 * mk * G_SHEET / (RHO0_SHEET * vt * vt) : 0);
   const eqDia = cda => 2 * Math.sqrt(Math.max(cda, 0) / (Math.PI * 0.8));
-  const c1CdA = vel ? cdsV(mRef, c.c1Vt) : c.c1Cd * Math.PI * (c.c1D * mm / 2) ** 2;
-  const c2CdA = vel ? cdsV(mRef, c.c2Vt) : c.c2Cd * Math.PI * (c.c2D * mm / 2) ** 2;
+  const chS = Math.max(c.chuteScale, 0) / 100;
+  const c1CdA = (vel ? cdsV(mRef, c.c1Vt) : c.c1Cd * Math.PI * (c.c1D * mm / 2) ** 2) * chS;
+  const c2CdA = (vel ? cdsV(mRef, c.c2Vt) : c.c2Cd * Math.PI * (c.c2D * mm / 2) ** 2) * chS;
   const payloadCdA = cdsV(mPay, c.payloadVt);
   if (vel && c.rec1 !== 'none' && !(c.c1Vt > 0)) W('1段目の終端速度が 0 以下です');
   if (vel && c.rec1 !== 'none' && c.rec2 !== 'none' && !(c.c2Vt > 0)) W('2段目の終端速度が 0 以下です');
   if (payOn && !(c.payloadVt > 0)) W('ペイロードの終端速度が 0 以下です');
 
   // --- 方位・風（真北基準に直す） ---
-  const azDeg = ((c.azim + (c.azimRef === 'magnetic' ? c.magDecl : 0)) % 360 + 360) % 360;
-  const windDirOff = c.windDirRef === 'magnetic' ? c.magDecl : 0;
+  // 磁気偏角: auto は WMM2025（geo.js）で射点・打上げ日から計算
+  const G = typeof window !== 'undefined' ? window.Geo : null;
+  const decl = c.magMode === 'auto' && G ? G.magDecl(c.lat, c.lon, c.siteAlt, G.decimalYear(c.launchDate)) : c.magDecl;
+  if (c.magMode === 'auto' && !G) W('geo.js が無いため磁気偏角の自動計算ができません（手入力値を使いました）');
+  const azDeg = ((c.azim + (c.azimRef === 'magnetic' ? decl : 0)) % 360 + 360) % 360;
+  const windDirOff = c.windDirRef === 'magnetic' ? decl : 0;
+  // 風プロファイル（高度[m], 風速[m/s], 風向[deg, windDirRef 基準]）→ [[z, 東, 北], …]（風下方向の速度成分）
+  let windTab = null;
+  if (c.windModel === 'profile') {
+    const rows = [];
+    for (const raw of String(c.windProfile || '').split(/\r?\n/)) {
+      const v = raw.trim().split(/[\s,;\t]+/).map(Number);
+      if (v.length >= 3 && v.slice(0, 3).every(Number.isFinite)) {
+        const to = (v[2] + windDirOff + 180) * D2R;
+        rows.push([v[0], v[1] * Math.sin(to), v[1] * Math.cos(to)]);
+      }
+    }
+    if (rows.length) windTab = rows.sort((a, b) => a[0] - b[0]);
+    else W('風プロファイルを読み取れなかったため、べき法則を使いました（行: 高度m,風速m/s,風向deg）');
+  }
+  // 地形: landSurface 'terrain' は terrain.js の標高タイル（取得済みの範囲）から地面の高さを求める
+  const T = typeof window !== 'undefined' ? window.Terrain : null;
+  let groundZ = null;
+  if (c.landSurface === 'terrain') {
+    const h0 = T && T.height(c.lat, c.lon);
+    if (h0 == null) W('地形データが無いため、着地面は射点の高さとしました（落下分散タブ等で地形を取得してください）');
+    else groundZ = (x, y) => { const [la, lo] = enuToLatLon(c.lat, c.lon, x, y), h = T.height(la, lo); return h == null ? 0 : h - h0; };
+  }
+  const tipOff = !!c.tipOff && c.lugUpper > c.lugAft;
+  if (c.tipOff && !tipOff) W('ティップオフ: 上側ラグ位置が下側ラグ（後端〜最後尾ラグ）より前方にないため無効にしました');
   const windFromTrue = ((c.windFrom + windDirOff) % 360 + 360) % 360;
   const wf = (windFromTrue + 180) * D2R;
 
@@ -460,7 +503,10 @@ function buildModel(c0) {
     mainAlt: c.mainAlt, openTime: c.openTime,
     siteAlt: c.siteAlt, T0sl, lat: c.lat, lon: c.lon,
     railLen: c.railLen, lugAft: c.lugAft * mm, railEff: Math.max(c.railLen - c.lugAft * mm, 0),
-    landZ: c.landSurface === 'sea' ? -c.siteAlt : 0,
+    tipOff, railUp: Math.max(c.railLen - c.lugUpper * mm, 0),
+    landZ: c.landSurface === 'sea' ? -c.siteAlt : 0, groundZ, magDecl: decl,
+    earthRot: !!c.earthRot, omegaENU: G && c.earthRot ? [0, G.OMEGA * Math.cos(c.lat * D2R), G.OMEGA * Math.sin(c.lat * D2R)] : [0, 0, 0],
+    windTab, windMaxH: c.windMaxH > 0 ? c.windMaxH : Infinity, chuteDelay: c.chuteDelay,
     elev: Math.min(90, Math.max(1, c.elev)) * D2R, trueAzim: azDeg * D2R, azim: azDeg * D2R,
     wind: Math.max(0, c.wind), wdir: [Math.sin(wf), Math.cos(wf)], windFromTrue, windDirOff, windRef: c.windRef, windExp: c.windExp, gust: Math.max(0, c.gust),
     dt: Math.min(0.02, Math.max(0.0005, c.dt / 1000)),
@@ -536,15 +582,25 @@ function simulate(M, opt = {}) {
   const c = M.c;
   const rng = mulberry32(opt.seed ?? 1);
   const record = opt.record !== false, ballistic = !!opt.ballistic;
-  let wind = M.wind, wdir = M.wdir, gustS = M.gust;
-  if (opt.wind) { // speed / from（from は windDirRef 基準）で上書きし、gust は 0
+  let wind = M.wind, wdir = M.wdir, gustS = M.gust, wTab = M.windTab;
+  if (opt.wind) { // speed / from（from は windDirRef 基準）で上書き（べき法則）し、gust は 0
     wind = Math.max(0, +opt.wind.speed || 0);
     const wf = ((+opt.wind.from || 0) + M.windDirOff + 180) * D2R;
-    wdir = [Math.sin(wf), Math.cos(wf)]; gustS = 0;
+    wdir = [Math.sin(wf), Math.cos(wf)]; gustS = 0; wTab = null;
   }
-  const windAt = z => wind * Math.pow(Math.max(z, 1) / M.windRef, M.windExp);
-  const gAt = h => G0 * (RE / (RE + h)) ** 2;
+  const U = PHYS_UTIL, tabE = wTab && wTab.map(r => [r[0], r[1]]), tabN = wTab && wTab.map(r => [r[0], r[2]]);
+  // 風（gust を除く）[東, 北]: プロファイルは高度で補間、べき法則は windMaxH で頭打ち
+  const windV = z => {
+    if (wTab) { const zz = Math.max(z, 0); return [U.interp(tabE, zz), U.interp(tabN, zz)]; }
+    const w = wind * Math.pow(Math.min(Math.max(z, 1), M.windMaxH) / M.windRef, M.windExp);
+    return [w * wdir[0], w * wdir[1]];
+  };
+  const GEO = M.earthRot && typeof window !== 'undefined' ? window.Geo : null;
+  const gAt = h => (GEO ? GEO.normalGravity(M.lat, h) : G0 * (RE / (RE + h)) ** 2);
+  const OM = M.omegaENU, rot = !!GEO;
   const landZ = Math.min(M.landZ, 0);
+  const gz = (x, yy) => (M.groundZ ? M.groundZ(x, yy) : landZ); // 着地面の高さ（射点基準）
+  const tD = M.chuteDelay || 0; // 開傘タイミングのずれ（ばらつき）
   const rec = [], ev = {};
   const st = { maxV: 0, maxMach: 0, maxG: 0, maxQ: 0, maxAlpha: 0, minSM: Infinity, apogee: 0, apoT: 0, apoX: 0, apoY: 0, maxRollRate: 0,
     asc: { maxV: 0, maxV_t: NaN, maxMach: 0, maxQ: 0, maxQ_t: NaN, maxG: 0 } }; // asc: 離床〜頂点の最大値（flightSummary 用）
@@ -566,11 +622,11 @@ function simulate(M, opt = {}) {
   function deriv(t, y, dy, info) {
     const z = y[2], h = Math.max(M.siteAlt + z, 0);
     const at = atm(M, h), T = M.thrust(t, z), ms = M.massAt(t, released), g = gAt(h);
-    const wf = windAt(z), wx = wf * wdir[0] + gust[0], wy = wf * wdir[1] + gust[1];
+    const wv = windV(z), wx = wv[0] + gust[0], wy = wv[1] + gust[1];
     dy[0] = y[3]; dy[1] = y[4]; dy[2] = y[5];
     for (let i = 6; i < NS; i++) dy[i] = 0;
     let a0 = 0, a1 = 0, a2 = 0, V = 0, q = 0, alpha = 0, sm = NaN, fst = NaN, mach = 0;
-    if (phase === 0) {
+    if (phase === 0 || phase === 3) {
       const vr = y[3] * u0[0] + y[4] * u0[1] + y[5] * u0[2];
       V = Math.abs(vr); q = 0.5 * at.rho * V * V; mach = V / at.a;
       const D = q * M.A * M.cdAt(mach) * Math.sign(vr);
@@ -624,15 +680,19 @@ function simulate(M, opt = {}) {
       info.V = V; info.mach = mach; info.q = q; info.alpha = alpha; info.T = T; info.m = ms.m; info.cg = ms.cg;
       info.sm = sm; info.fst = fst; info.fs = Math.hypot(a0, a1, a2 + g) / G0; info.rho = at.rho;
     }
+    if (rot && phase !== 0 && phase !== 3) { // コリオリ力 −2Ω×v（遠心力は正規重力に含む）
+      dy[3] -= 2 * (OM[1] * y[5] - OM[2] * y[4]); dy[4] -= 2 * (OM[2] * y[3] - OM[0] * y[5]); dy[5] -= 2 * (OM[0] * y[4] - OM[1] * y[3]);
+    }
   }
 
   // ペイロードの微分（s = [r, v]。a = −g·ẑ − 0.5·ρ·|v_rel|·CdS_p·r(t)/m_p·v_rel）
   let pay = null;
   function pderiv(t, s, ds, info) {
     const z = s[2], h = Math.max(M.siteAlt + z, 0), at = atm(M, h), g = gAt(h);
-    const wf = windAt(z), vx = s[3] - (wf * wdir[0] + gust[0]), vy = s[4] - (wf * wdir[1] + gust[1]), vz = s[5];
+    const wv = windV(z), vx = s[3] - (wv[0] + gust[0]), vy = s[4] - (wv[1] + gust[1]), vz = s[5];
     const V = Math.hypot(vx, vy, vz), k = 0.5 * at.rho * V * pay.cds * openR(t - pay.t0) / pay.m;
     ds[0] = s[3]; ds[1] = s[4]; ds[2] = s[5]; ds[3] = -k * vx; ds[4] = -k * vy; ds[5] = -k * vz - g;
+    if (rot) { ds[3] -= 2 * (OM[1] * s[5] - OM[2] * s[4]); ds[4] -= 2 * (OM[2] * s[3] - OM[0] * s[5]); ds[5] -= 2 * (OM[0] * s[4] - OM[1] * s[3]); }
     if (info) { info.V = V; info.q = 0.5 * at.rho * V * V; info.rho = at.rho; }
   }
 
@@ -660,7 +720,7 @@ function simulate(M, opt = {}) {
   // phase 1 のサブステップ数（外側ステップの開始時に評価。§3.2）
   const subN1 = (t, H) => {
     const z = y[2], at = atm(M, Math.max(M.siteAlt + z, 0)), ms = M.massAt(t, released);
-    const wf = windAt(z), V = Math.hypot(y[3] - wf * wdir[0] - gust[0], y[4] - wf * wdir[1] - gust[1], y[5]);
+    const wv = windV(z), V = Math.hypot(y[3] - wv[0] - gust[0], y[4] - wv[1] - gust[1], y[5]);
     const q = 0.5 * at.rho * V * V, mach = V / at.a, cp = M.cpAt(mach);
     const wn = Math.sqrt(q * M.A * Math.abs(cp.cna) * Math.abs(cp.xcp - ms.cg) / ms.I);
     const lq = Math.abs(0.25 * at.rho * V * L2A * M.cmqAt(mach, ms.cg)) / ms.I;
@@ -671,7 +731,7 @@ function simulate(M, opt = {}) {
   };
   // phase 2・ペイロードのサブステップ数: h = min(0.02, 0.5/λ_d), λ_d = ρ·CdA·V_a/m
   const subND = (z, vx, vy, vz, cda, m, H) => {
-    const wf = windAt(z), V = Math.hypot(vx - wf * wdir[0] - gust[0], vy - wf * wdir[1] - gust[1], vz);
+    const wv = windV(z), V = Math.hypot(vx - wv[0] - gust[0], vy - wv[1] - gust[1], vz);
     const ld = atm(M, Math.max(M.siteAlt + z, 0)).rho * cda * V / m;
     const hs = Math.min(0.02, ld > 0 ? 0.5 / ld : Infinity);
     return Math.max(1, Math.ceil(H / hs - 1e-9));
@@ -684,6 +744,42 @@ function simulate(M, opt = {}) {
   });
   const psnap = (t, s) => ({ t, x: s[0], y: s[1], z: s[2], V: Math.hypot(s[3], s[4], s[5]) });
   const reached = x => t >= x - 1e-9;
+
+  // ティップオフ（phase 3）: 上側ラグが抜けてから下側ラグが抜けるまで、下側ラグを支点に重力で頭下げに回る。
+  // 支点はレールに沿って動く（レール方向の運動はレール上と同じ式）。刻み 0.5 ms の陽解法
+  let tip = null;
+  const tipStep = (t0, H) => {
+    const n = Math.max(1, Math.ceil(H / 0.0005)), h = H / n;
+    for (let i = 0; i < n && tip; i++) {
+      const tt = t0 + i * h, z = y[2], hh = Math.max(M.siteAlt + z, 0), at = atm(M, hh), ms = M.massAt(tt), g = gAt(hh);
+      const T = M.thrust(tt, z), V = Math.abs(tip.vP), D = 0.5 * at.rho * V * V * M.A * M.cdAt(V / at.a) * Math.sign(tip.vP);
+      const aR = (T - D) / ms.m - g * u0[2];
+      tip.sP += tip.vP * h + 0.5 * aR * h * h; tip.vP += aR * h;
+      const d = Math.max(M.L - ms.cg - M.lugAft, 0), Ip = ms.I + ms.m * d * d, k = ms.m * g * d / Ip;
+      // τ = d·u × (0,0,−m·g) = −m·g·d·(u_y, −u_x, 0)
+      y[9] += -k * y[7] * h; y[10] += k * y[6] * h;
+      const du = [y[10] * y[8] - y[11] * y[7], y[11] * y[6] - y[9] * y[8], y[9] * y[7] - y[10] * y[6]];
+      for (let j = 0; j < 3; j++) y[6 + j] += du[j] * h;
+      fixRot();
+      const sd = tip.sP - tip.s0, P = [tip.P0[0] + sd * u0[0], tip.P0[1] + sd * u0[1], tip.P0[2] + sd * u0[2]];
+      const wxu = [y[10] * y[8] - y[11] * y[7], y[11] * y[6] - y[9] * y[8], y[9] * y[7] - y[10] * y[6]];
+      for (let j = 0; j < 3; j++) { y[j] = P[j] + d * y[6 + j]; y[3 + j] = tip.vP * u0[j] + d * wxu[j]; }
+      if (tip.sP >= M.railEff) return true; // 下側ラグが抜けた
+    }
+    return false;
+  };
+  const exitRail = () => {
+    const tipped = !!tip; tip = null;
+    phase = 1; deriv(t, y, dtmp, aux); // aux.V = 対気速度（gust 込み）
+    const V = Math.hypot(y[3], y[4], y[5]), wv = windV(y[2]);
+    const W0 = wv[0], W1 = wv[1], wu = W0 * u0[0] + W1 * u0[1];
+    const wp = Math.hypot(W0 - wu * u0[0], W1 - wu * u0[1], -wu * u0[2]); // レールに直交する風成分（gust なし）
+    ev.railExit = { t, V, va: aux.V, sm: aux.sm, alphaW: Math.atan2(wp, V) / D2R };
+    if (tipped) {
+      ev.railExit.tipRate = Math.hypot(y[9], y[10], y[11]) / D2R; // [deg/s]
+      ev.railExit.tipAngle = Math.acos(Math.min(1, y[6] * u0[0] + y[7] * u0[1] + y[8] * u0[2])) / D2R;
+    }
+  };
 
   let tRec = 0, lifted = false, apoDone = false, tApo = -1, maxZ = 0, bodyDone = false;
   deriv(t, y, dtmp, aux);
@@ -722,8 +818,10 @@ function simulate(M, opt = {}) {
     }
     const tp = t, ph0 = phase, yp = bodyDone ? null : y.slice(), sp = pAct ? pay.s.slice() : null;
     // --- 本体 ---
+    let tipDone = false;
     if (!bodyDone) {
-      if (phase === 1) {
+      if (phase === 3) tipDone = tipStep(tp, H);
+      else if (phase === 1) {
         const n = subN1(tp, H);
         if (n > 200) { ev.error = '回転運動が硬すぎます（慣性モーメント・減衰係数の単位を確認）'; break; }
         for (let i = 0; i < n; i++) { rkB(deriv, tp + i * H / n, y, H / n); fixRot(); }
@@ -747,15 +845,13 @@ function simulate(M, opt = {}) {
         const sAlong = y[0] * u0[0] + y[1] * u0[1] + y[2] * u0[2];
         if (sAlong < 0) for (let i = 0; i < 6; i++) y[i] = 0;
         if (!lifted && sAlong > 1e-3) { lifted = true; ev.liftoff = { t }; }
-        if (lifted && sAlong >= M.railEff) { // 最後尾ラグがレール端を抜けたら離脱（railEff = railLen − lugAft。離床前は離脱しない）
-          phase = 1; deriv(t, y, dtmp, aux); // aux.V = 対気速度（gust 込み）
-          const V = Math.hypot(y[3], y[4], y[5]), w = windAt(y[2]);
-          const W0 = w * wdir[0], W1 = w * wdir[1], wu = W0 * u0[0] + W1 * u0[1];
-          const wp = Math.hypot(W0 - wu * u0[0], W1 - wu * u0[1], -wu * u0[2]); // レールに直交する風成分（gust なし）
-          ev.railExit = { t, V, va: aux.V, sm: aux.sm, alphaW: Math.atan2(wp, V) / D2R };
-        }
+        if (lifted && M.tipOff && sAlong >= M.railUp && sAlong < M.railEff) { // 上側ラグが抜けた → ティップオフ
+          const ms = M.massAt(t), d = Math.max(M.L - ms.cg - M.lugAft, 0);
+          tip = { s0: sAlong, sP: sAlong, vP: y[3] * u0[0] + y[4] * u0[1] + y[5] * u0[2], P0: [y[0] - d * u0[0], y[1] - d * u0[1], y[2] - d * u0[2]] };
+          phase = 3; ev.upperLug = { t };
+        } else if (lifted && sAlong >= M.railEff) exitRail(); // 最後尾ラグがレール端を抜けたら離脱（railEff = railLen − lugAft。離床前は離脱しない）
         if (!lifted && t > M.tb + 1) { ev.error = '推力不足で離陸できません'; break; }
-      }
+      } else if (phase === 3 && tipDone) exitRail();
       if (!ev.burnout && reached(M.tb)) ev.burnout = { t: M.tb, z: y[2], V: Math.hypot(y[3], y[4], y[5]) };
 
       deriv(t, y, dtmp, aux);
@@ -782,32 +878,33 @@ function simulate(M, opt = {}) {
       if (!apoDone && phase !== 0 && y[5] < 0) { apoDone = true; tApo = t; ev.apogee = { t, z: maxZ, V: aux.V }; }
 
       // 着地（本体）
-      if (lifted && phase !== 0 && y[2] <= landZ) {
-        const f = (yp[2] - landZ) / (yp[2] - y[2]), tl = tp + f * H;
+      const g0z = lifted && phase !== 0 && phase !== 3 ? gz(y[0], y[1]) : -Infinity;
+      if (y[2] <= g0z) {
+        const f = (yp[2] - g0z) / (yp[2] - y[2]), tl = tp + f * H;
         for (let i = 0; i < 6; i++) y[i] = yp[i] + f * (y[i] - yp[i]);
-        y[2] = landZ;
+        y[2] = g0z;
         const tk = t; t = tl; deriv(t, y, dtmp, aux);
         ev.landing = { t, x: y[0], y: y[1], V: Math.hypot(y[3], y[4], y[5]), vz: y[5] };
         if (record) rec.push(snap());
         t = tk; bodyDone = true;
       } else {
         // ペイロード放出（phase 0 中はレール離脱後の最初のステップまで延ばす）
-        if (M.payloadOn && M.payloadMass > 0 && !pay && ph0 !== 0 && reached(M.payloadTime)) { release(); deriv(t, y, dtmp, aux); }
+        if (M.payloadOn && M.payloadMass > 0 && !pay && ph0 !== 0 && ph0 !== 3 && reached(M.payloadTime)) { release(); deriv(t, y, dtmp, aux); }
         // 回収系（phase 0 では展開しない。ballistic なら展開しない。rec1 'none' なら rec2 も無視）
-        if (phase !== 0 && !ballistic && c.rec1 !== 'none') {
+        if (phase !== 0 && phase !== 3 && !ballistic && c.rec1 !== 'none') {
           const n0 = (tc1 >= 0) + (tc2 >= 0);
           if (tc1 < 0) {
             let by = null;
             if (c.rec1 === 'apogee') {
-              const okA = apoDone && reached(tApo + c.rec1Delay), okT = c.rec1Backup > 0 && reached(c.rec1Backup);
+              const okA = apoDone && reached(tApo + c.rec1Delay + tD), okT = c.rec1Backup > 0 && reached(c.rec1Backup + tD);
               if (okA && okT) by = tApo + c.rec1Delay <= c.rec1Backup ? 'apogee' : 'timer';
               else by = okA ? 'apogee' : okT ? 'timer' : null;
-            } else if (c.rec1 === 'ignition') { if (reached(c.rec1Time)) by = 'timer'; }
-            else if (reached(M.tb + c.rec1Time)) by = 'timer';
+            } else if (c.rec1 === 'ignition') { if (reached(c.rec1Time + tD)) by = 'timer'; }
+            else if (reached(M.tb + c.rec1Time + tD)) by = 'timer';
             if (by) deploy(1, by);
           }
           if (tc2 < 0) {
-            const ok2 = c.rec2 === 'altitude' ? tc1 >= 0 && y[2] <= c.mainAlt : c.rec2 === 'ignition' ? reached(c.rec2Time) : false;
+            const ok2 = c.rec2 === 'altitude' ? tc1 >= 0 && y[2] <= c.mainAlt : c.rec2 === 'ignition' ? reached(c.rec2Time + tD) : false;
             if (ok2) {
               const before = tc1 < 0;
               if (before) deploy(1, 'timer');
@@ -824,10 +921,11 @@ function simulate(M, opt = {}) {
     // --- ペイロードの着地・記録 ---
     if (pAct && !pay.done) {
       const s = pay.s;
-      if (s[2] <= landZ) {
-        const f = (sp[2] - landZ) / (sp[2] - s[2]), tl = tp + f * H;
+      const pgz = gz(s[0], s[1]);
+      if (s[2] <= pgz) {
+        const f = (sp[2] - pgz) / (sp[2] - s[2]), tl = tp + f * H;
         for (let i = 0; i < 6; i++) s[i] = sp[i] + f * (s[i] - sp[i]);
-        s[2] = landZ;
+        s[2] = pgz;
         pay.out.landing = { t: tl, x: s[0], y: s[1], V: Math.hypot(s[3], s[4], s[5]), vz: s[5] };
         if (record) pay.out.rec.push(psnap(tl, s));
         pay.done = true;

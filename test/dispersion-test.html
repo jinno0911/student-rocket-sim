@@ -1,0 +1,379 @@
+<!doctype html>
+<html lang="ja">
+<head>
+<meta charset="utf-8">
+<meta name="viewport" content="width=device-width,initial-scale=1">
+<title>dispersion.js 自己テスト</title>
+<link rel="stylesheet" href="../style.css">
+<style>
+  body{padding:12px}
+  #result{white-space:pre-wrap;font:12px/1.5 ui-monospace,Consolas,monospace;background:#0d1428;border:1px solid #273456;border-radius:8px;padding:8px}
+  .tab{display:block}
+</style>
+</head>
+<body>
+<h1 style="font-size:16px">dispersion.js 自己テスト <span class="muted small">（?leaflet=1 で Leaflet 経路も試す）</span></h1>
+<pre id="result">running…</pre>
+<section id="tab-disp" class="tab on"><div class="card"><div id="dispersion"></div></div></section>
+
+<script>window.__g0 = new Set(Object.getOwnPropertyNames(window));</script>
+<script src="../physics.js"></script>
+<script>
+// physics.js v2 の関数がまだ無いときだけ、テスト専用の代替を入れる（本体は契約どおりの名前を裸の識別子で呼ぶ）
+window.__shim = [];
+if (typeof flightSummary !== 'function') {
+  __shim.push('flightSummary');
+  window.flightSummary = (M, s) => {
+    const e = s.ev || {}, st = s.st || {}, N = NaN, apoT = e.apogee ? e.apogee.t : N, dt = d => d ? d.t - apoT : N;
+    const pl = s.payload && s.payload.landing;
+    return {
+      apogee_m: st.apogee ?? N, apogee_t_s: st.apoT ?? N, railExit_V_mps: e.railExit ? e.railExit.V : N, railExit_alphaW_deg: e.railExit && e.railExit.alphaW != null ? e.railExit.alphaW : N,
+      deploy1_dtApo_s: dt(e.deploy1), deploy2_dtApo_s: dt(e.deploy2), payload_dtApo_s: dt(e.payload),
+      deploy1_Va_mps: e.deploy1 ? e.deploy1.V : N, deploy2_Va_mps: e.deploy2 ? e.deploy2.V : N, payload_Va_mps: e.payload ? e.payload.V : N,
+      landing_t_s: e.landing ? e.landing.t : N, landing_V_mps: e.landing ? e.landing.V : N, landing_vz_mps: e.landing ? e.landing.vz : N,
+      landing_dist_m: e.landing ? Math.hypot(e.landing.x, e.landing.y) : N,
+      payloadLanding_dist_m: pl ? Math.hypot(pl.x, pl.y) : N, payloadLanding_vz_mps: pl ? pl.vz : N,
+    };
+  };
+}
+if (typeof enuToLatLon !== 'function') {
+  __shim.push('enuToLatLon');
+  window.enuToLatLon = (lat0, lon0, x, y) => [lat0 + y / RE * 180 / Math.PI, lon0 + x / (RE * Math.cos(lat0 * Math.PI / 180)) * 180 / Math.PI];
+}
+if (typeof normalizeCfg !== 'function') { __shim.push('normalizeCfg'); window.normalizeCfg = c => ({ ...c }); }
+// app.js の代わり: cfg（let なので window には出ない）と download()
+let cfg = normalizeCfg({});
+window.__dl = [];
+function download(name, text, type) { __dl.push({ name, text, type }); }
+</script>
+<script>window.__g1 = new Set(Object.getOwnPropertyNames(window));</script>
+<script src="../dispersion.js"></script>
+<script>
+(async () => {
+  const out = [], res = { pass: 0, fail: 0 };
+  const ok = (name, cond, detail = '') => { if (cond) { res.pass++; out.push('PASS ' + name); } else { res.fail++; out.push('FAIL ' + name + (detail ? ' :: ' + detail : '')); } document.getElementById('result').textContent = out.join('\n') + '\n… running'; };
+  const near = (a, b, tol) => Math.abs(a - b) <= tol;
+  const show = () => { document.getElementById('result').textContent = out.join('\n') + `\n\nPASS ${res.pass} / FAIL ${res.fail}` + (__shim.length ? `\n（代替シム使用: ${__shim.join(', ')}）` : ''); };
+  const wait = ms => new Promise(r => setTimeout(r, ms));
+  const useLeaflet = /leaflet=1/.test(location.search);
+  try { localStorage.removeItem('student-rocket-sim:disp'); } catch (e) { }
+  try {
+    const D = window.Dispersion, T = D && D._test;
+    // ---- モジュールの形 ----
+    ok('window.Dispersion がある', !!D && ['mount', 'setVisible', 'markStale'].every(k => typeof D[k] === 'function'));
+    const added = [...Object.getOwnPropertyNames(window)].filter(k => !__g1.has(k) && k !== '__g1');
+    ok('dispersion.js が作る window のプロパティは Dispersion だけ', added.length === 1 && added[0] === 'Dispersion', added.join(','));
+    const host = document.getElementById('dispersion');
+    D.markStale(); D.setVisible(true); D.setVisible(false);
+    ok('mount 前の markStale/setVisible は何もしない', host.childElementCount === 0 && !document.getElementById('disp-style'));
+
+    // ---- 入力の解釈 ----
+    ok('parseSpeeds: 0 を先頭に 1 点・昇順・重複なし', JSON.stringify(T.parseSpeeds('3, 1,2,2')) === '[0,1,2,3]');
+    ok('parseSpeeds: 空欄は [0]', JSON.stringify(T.parseSpeeds('')) === '[0]');
+    ok('parseSpeeds: 0・負値を除き全角も読む', JSON.stringify(T.parseSpeeds('0, 0.5 -1 ５')) === '[0,0.5,5]', JSON.stringify(T.parseSpeeds('0, 0.5 -1 ５')));
+    ok('dirList 16/36', T.dirList(16).length === 16 && T.dirList(16)[1] === 22.5 && T.dirList(36)[35] === 350 && T.dirList(8)[7] === 315);
+    ok('parseElevs: 空欄は設定値', JSON.stringify(T.parseElevs('', 85)) === '[85]' && JSON.stringify(T.parseElevs('80, 85,95', 85)) === '[80,85]');
+    const pp = T.parsePolygon('35.1,140.1\n35.2, 140.1\n\n# memo\n35.2\t140.2\n35.1,140.1\nfoo');
+    ok('parsePolygon: 閉じた点を落とし、読めない行を数える', pp.pts.length === 3 && pp.bad.length === 1 && pp.pts[1][0] === 35.2, JSON.stringify(pp));
+
+    // ---- ENU と判定 ----
+    const lat0 = 35.177228, lon0 = 140.357056;
+    const ll = enuToLatLon(lat0, lon0, 1234.5, -567.8), e = T.toENU(lat0, lon0, ll[0], ll[1]);
+    ok('toENU は enuToLatLon の逆変換（1e-6 m）', near(e[0], 1234.5, 1e-6) && near(e[1], -567.8, 1e-6), e.join(','));
+    const zsC = T.prepZones([{ kind: 'include', shape: 'circle', lat: lat0, lon: lon0, r_m: 500 }], lat0, lon0);
+    ok('円 include: 内側 OK・外側 NG', T.judgePoint(zsC, 0, 0, 0) === true && T.judgePoint(zsC, 0, 499, 0) === true && T.judgePoint(zsC, 0, 0, -501) === false);
+    ok('円 include: margin 10 m', T.judgePoint(zsC, 10, 495, 0) === false && T.judgePoint(zsC, 10, 489, 0) === true);
+    const zsX = T.prepZones([{ kind: 'include', shape: 'circle', lat: lat0, lon: lon0, r_m: 2000 }, { kind: 'exclude', shape: 'circle', ...(() => { const p = enuToLatLon(lat0, lon0, 1000, 0); return { lat: p[0], lon: p[1] }; })(), r_m: 200 }], lat0, lon0);
+    ok('exclude: 中は NG、外は OK、margin で NG', T.judgePoint(zsX, 0, 1000, 100) === false && T.judgePoint(zsX, 0, 1000, 250) === true && T.judgePoint(zsX, 60, 1000, 250) === false);
+    const sq = [[-1000, -1000], [1000, -1000], [1000, 1000], [-1000, 1000]].map(p => enuToLatLon(lat0, lon0, p[0], p[1]));
+    const zsP = T.prepZones([{ kind: 'include', shape: 'polygon', pts: sq }], lat0, lon0);
+    ok('多角形 include: ray casting と辺までの距離', T.judgePoint(zsP, 0, 0, 0) && T.judgePoint(zsP, 0, 999, 0) && !T.judgePoint(zsP, 5, 999, 0) && !T.judgePoint(zsP, 0, 1001, 0) && T.judgePoint(zsP, 5, 990, 990));
+    const Lsh = [[0, 0], [2000, 0], [2000, 1000], [1000, 1000], [1000, 2000], [0, 2000]].map(p => enuToLatLon(lat0, lon0, p[0], p[1]));
+    const zsL = T.prepZones([{ kind: 'include', shape: 'polygon', pts: Lsh }], lat0, lon0);
+    ok('凹多角形（L 字）の内外', T.judgePoint(zsL, 0, 500, 1500) && T.judgePoint(zsL, 0, 1500, 500) && !T.judgePoint(zsL, 0, 1500, 1500));
+    ok('多角形の符号付き距離', near(T.sdist(zsP[0], 900, 0), 100, 1e-3) && near(T.sdist(zsP[0], 1100, 0), -100, 1e-3));
+    const zsE = T.prepZones([{ kind: 'exclude', shape: 'circle', lat: lat0, lon: lon0, r_m: 100 }], lat0, lon0);
+    ok('exclude だけのとき、外側は OK（include 条件は空で真）', T.judgePoint(zsE, 0, 300, 0) === true && T.judgePoint(zsE, 0, 50, 0) === false);
+    ok('zones が空なら null（判定しない）', T.judgePoint([], 0, 0, 0) === null);
+    ok('非有限の着地点は NG', T.judgePoint(zsC, 0, NaN, 0) === false);
+
+    // ---- Dispersion._geom（DOM に触れない純関数）----
+    const G = D._geom;
+    const gNames = ['pointInPolygon', 'distToPolygon', 'signedDist', 'zoneOk', 'allowFromMatrix', 'prepZones', 'toENU', 'toLL', 'downwindUnit'];
+    ok('_geom の関数がそろう', !!G && gNames.every(k => typeof G[k] === 'function'), G ? gNames.filter(k => typeof G[k] !== 'function').join(',') : 'no _geom');
+    const sqE = [[0, 0], [100, 0], [100, 100], [0, 100]];
+    ok('pointInPolygon: 正方形の内外', G.pointInPolygon(sqE, 50, 50) && G.pointInPolygon(sqE, 1, 99) && !G.pointInPolygon(sqE, 150, 50) && !G.pointInPolygon(sqE, -1, 50) && !G.pointInPolygon(sqE, 50, 101) && !G.pointInPolygon(sqE, 50, -0.5));
+    ok('pointInPolygon: 時計回り・閉じた点列でも同じ', G.pointInPolygon([...sqE].reverse(), 50, 50) && !G.pointInPolygon([...sqE].reverse(), 150, 50) && G.pointInPolygon([...sqE, sqE[0]], 50, 50) && !G.pointInPolygon([...sqE, sqE[0]], 150, 50));
+    const Lp = [[0, 0], [200, 0], [200, 100], [100, 100], [100, 200], [0, 200]];
+    ok('pointInPolygon: 凹多角形（L 字）の切欠きは外', G.pointInPolygon(Lp, 50, 150) && G.pointInPolygon(Lp, 150, 50) && !G.pointInPolygon(Lp, 150, 150) && !G.pointInPolygon(Lp, 250, 50));
+    const dia = [[0, 0], [100, 50], [0, 100], [-100, 50]];
+    ok('pointInPolygon: レイが頂点を通る（菱形の中心高さ）', G.pointInPolygon(dia, 0, 50) && G.pointInPolygon(dia, 90, 50) && !G.pointInPolygon(dia, 150, 50) && !G.pointInPolygon(dia, -150, 50));
+    const tri = [[0, 0], [300, 0], [0, 300]];
+    ok('pointInPolygon: 斜辺の両側', G.pointInPolygon(tri, 100, 190) && !G.pointInPolygon(tri, 100, 210));
+    ok('distToPolygon: 辺・頂点までの最短距離（内外とも非負）', near(G.distToPolygon(sqE, 50, 40), 40, 1e-9) && near(G.distToPolygon(sqE, 130, 50), 30, 1e-9) && near(G.distToPolygon(sqE, 103, 104), 5, 1e-9) && near(G.distToPolygon(sqE, 50, 0), 0, 1e-9),
+      [G.distToPolygon(sqE, 50, 40), G.distToPolygon(sqE, 130, 50), G.distToPolygon(sqE, 103, 104)].join(','));
+    ok('distToPolygon: 閉じる辺（最後→最初）も見る', near(G.distToPolygon(sqE, -7, 50), 7, 1e-9) && near(G.distToPolygon(tri, 100, 210), 10 / Math.SQRT2, 1e-9));
+    ok('distToPolygon: 凹部の角（内側は頂点まで・切欠き側は辺まで）', near(G.distToPolygon(Lp, 90, 90), Math.hypot(10, 10), 1e-9) && near(G.distToPolygon(Lp, 110, 110), 10, 1e-9) && near(G.distToPolygon(Lp, 90, 150), 10, 1e-9), [G.distToPolygon(Lp, 90, 90), G.distToPolygon(Lp, 110, 110), G.distToPolygon(Lp, 90, 150)].join(','));
+    ok('signedDist: 円と多角形（内側が正）', near(G.signedDist({ shape: 'circle', c: [10, 0], r: 50 }, 10, 20), 30, 1e-9) && near(G.signedDist({ shape: 'circle', c: [0, 0], r: 50 }, 80, 0), -30, 1e-9)
+      && near(G.signedDist({ shape: 'polygon', p: sqE }, 50, 90), 10, 1e-9) && near(G.signedDist({ shape: 'polygon', p: sqE }, 50, 110), -10, 1e-9));
+    const zI = { kind: 'include', shape: 'polygon', p: sqE }, zX = { kind: 'exclude', shape: 'circle', c: [50, 50], r: 10 };
+    ok('zoneOk: include の中で exclude の外だけ OK', G.zoneOk([zI, zX], 0, 20, 20) === true && G.zoneOk([zI, zX], 0, 55, 50) === false && G.zoneOk([zI, zX], 0, 120, 50) === false);
+    ok('zoneOk: margin は include の内側・exclude の外側の両方に効く', G.zoneOk([zI, zX], 15, 10, 50) === false && G.zoneOk([zI, zX], 15, 72, 50) === false && G.zoneOk([zI, zX], 15, 80, 50) === true && G.zoneOk([zI, zX], 15, 20, 20) === true);
+    ok('zoneOk: margin ちょうどは OK（境界を含む）', G.zoneOk([zI], 15, 15, 50) === true && G.zoneOk([zI], 15, 14.999, 50) === false);
+    ok('zoneOk: include が複数ならどれか 1 つの内側で OK', G.zoneOk([zI, { kind: 'include', shape: 'circle', c: [500, 0], r: 50 }], 0, 500, 0) === true && G.zoneOk([zI, { kind: 'include', shape: 'circle', c: [500, 0], r: 50 }], 0, 300, 0) === false);
+    ok('zoneOk: exclude が複数なら全部の外側', G.zoneOk([zI, zX, { kind: 'exclude', shape: 'polygon', p: [[0, 0], [30, 0], [30, 30], [0, 30]] }], 0, 20, 20) === false && G.zoneOk([zI, zX, { kind: 'exclude', shape: 'polygon', p: [[0, 0], [30, 0], [30, 30], [0, 30]] }], 0, 80, 20) === true);
+    ok('zoneOk: zones 空は null・非有限は NG・負の margin は 0 扱い', G.zoneOk([], 0, 1, 1) === null && G.zoneOk([zI], 0, Infinity, 1) === false && G.zoneOk([zI], -50, 50, 120) === false);
+    // allowFromMatrix: 行 = 風速（昇順・先頭 0 m/s は 1 列）、列 = 風向
+    const spA = [0, 2, 4, 6];
+    const A1 = G.allowFromMatrix([[true], [true, true, false], [true, false, true], [false, true, true]], spA);
+    ok('allowFromMatrix: 「その風速以下が全部 OK」の最大（途中の NG で打切り）', JSON.stringify(A1.allow.map(a => a.v)) === '[4,2,0]' && JSON.stringify(A1.allow.map(a => a.lim)) === '[3,2,1]' && A1.all === 0, JSON.stringify(A1));
+    const A2 = G.allowFromMatrix([[true, true], [true, true], [true, true], [true, true]], spA);
+    ok('allowFromMatrix: 全 OK なら最大風速・lim=null', A2.allow.every(a => a.v === 6 && a.lim === null) && A2.all === 6, JSON.stringify(A2));
+    const A3 = G.allowFromMatrix([[false], [true, true], [true, true], [true, true]], spA, 2);
+    ok('allowFromMatrix: 0 m/s が NG なら打上げ不可（v=null, all=null）', A3.allow.length === 2 && A3.allow.every(a => a.v === null && a.lim === 0) && A3.all === null, JSON.stringify(A3));
+    const A4 = G.allowFromMatrix([[true, true, true], [true, null, true], [true, true, true], [true, true, true]], spA);
+    ok('allowFromMatrix: true 以外（null 等）は NG・0 m/s の行は全列でもよい', JSON.stringify(A4.allow.map(a => a.v)) === '[6,0,6]' && A4.all === 0, JSON.stringify(A4));
+    // ENU ヘルパー
+    const rtrip = [[35.177228, 140.357056, 1234.5, -567.8], [60, 10, -3000, 2500], [-40, -70, 50, 50]].every(([a, b, x, y]) => { const p = G.toLL(a, b, x, y), q2 = G.toENU(a, b, p[0], p[1]); return near(q2[0], x, 1e-6) && near(q2[1], y, 1e-6); });
+    ok('toENU / toLL の往復（35°・60°・南緯 40°）', rtrip);
+    const e1 = G.toENU(35, 140, 35.001, 140), e2 = G.toENU(60, 0, 60, 0.002);
+    const ex1 = latLonToEnu(35, 140, 35.001, 140), ex2 = latLonToEnu(60, 0, 60, 0.002);
+    ok('toENU は physics の latLonToEnu（楕円体の曲率半径）と同じ', near(e1[0], ex1[0], 1e-9) && near(e1[1], ex1[1], 1e-9) && near(e2[0], ex2[0], 1e-9) && near(e2[1], ex2[1], 1e-9), `${e1} / ${e2}`);
+    const llS = G.toLL(35, 140, 0, 1000);
+    ok('toLL は契約の enuToLatLon と同じ式', near(llS[0], enuToLatLon(35, 140, 0, 1000)[0], 1e-12) && near(llS[1], 140, 1e-12));
+    const dw = f => G.downwindUnit(f).map(v => Math.round(v * 1e9) / 1e9 + 0);
+    ok('downwindUnit: 吹いてくる方位の反対へ流れる単位ベクトル [東, 北]', JSON.stringify(dw(270)) === '[1,0]' && JSON.stringify(dw(0)) === '[0,-1]' && JSON.stringify(dw(90)) === '[-1,0]' && JSON.stringify(dw(180)) === '[0,1]' && near(Math.hypot(...G.downwindUnit(33)), 1, 1e-12), JSON.stringify([dw(270), dw(0), dw(90), dw(180)]));
+    const pz = G.prepZones([{ kind: 'include', shape: 'circle', lat: 35.001, lon: 140, r_m: 300 }, { kind: 'exclude', shape: 'polygon', pts: [[35, 140], [35.001, 140], [35, 140.001]] }], 35, 140);
+    ok('prepZones: 円は中心を ENU に・多角形は各点を ENU に', pz[0].shape === 'circle' && pz[0].r === 300 && near(pz[0].c[1], e1[1], 1e-9) && pz[1].p.length === 3 && near(pz[1].p[0][0], 0, 1e-9) && near(pz[1].p[2][0], G.toENU(35, 140, 35, 140.001)[0], 1e-9) && pz[1].kind === 'exclude');
+
+    // ---- mount と DOM ----
+    if (!useLeaflet) T.disableLeaflet();
+    D.mount(host);
+    const n1 = host.innerHTML.length;
+    D.mount(host); D.mount(document.body);
+    ok('mount は 1 回目だけ UI を作る', host.innerHTML.length === n1 && document.querySelectorAll('#disp-style').length === 1 && host.querySelector('.disp-go'));
+    const rules = [...document.getElementById('disp-style').sheet.cssRules];
+    const sels = rules.flatMap(r => (r.selectorText || '').split(','));
+    ok('CSS セレクタはすべて #dispersion で始まる', sels.length > 10 && sels.every(s => s.trim().startsWith('#dispersion ')), sels.filter(s => !s.trim().startsWith('#dispersion ')).join(' | '));
+    const css = T.css();
+    ok('必須 CSS: .disp-map の高さ', /#dispersion \.disp-map\{height:min\(60vh,520px\)/.test(css));
+    ok('必須 CSS: leaflet canvas / control input / 代替 canvas の高さ', css.includes('#dispersion .leaflet-container canvas{width:auto;height:auto}') && css.includes('#dispersion .leaflet-control input{width:auto}') && /#dispersion canvas\.disp-cv\{[^}]*height:min\(60vh,520px\)/.test(css));
+    const okCls = new Set(['card', 'card-h', 'fields', 'mini', 'field', 'row', 'primary', 'muted', 'small', 'kv']);
+    const cls = [...new Set([...host.querySelectorAll('[class]')].flatMap(el => [...el.classList]))];
+    ok('クラス名は disp-* か既存クラスだけ', cls.every(c => c.startsWith('disp-') || okCls.has(c)), cls.filter(c => !c.startsWith('disp-') && !okCls.has(c)).join(','));
+    ok('UI 文言は日本語（実行・中止・風速リスト）', /実行/.test(host.textContent) && /中止/.test(host.textContent) && /風速リスト/.test(host.textContent) && /許可域/.test(host.textContent));
+    const sp = host.querySelector('[data-k="speeds"]'); sp.value = '2,4'; sp.dispatchEvent(new Event('change', { bubbles: true }));
+    const nd = host.querySelector('[data-k="nDir"]'); nd.value = '8'; nd.dispatchEvent(new Event('change', { bubbles: true }));
+    let saved = {}; try { saved = JSON.parse(localStorage.getItem('student-rocket-sim:disp') || '{}'); } catch (e) { }
+    ok('入力を localStorage student-rocket-sim:disp に保存', saved.speeds === '2,4' && saved.nDir === 8, JSON.stringify(saved));
+    ok('風向の基準を cfg.windDirRef に合わせて表示', /真北/.test(host.querySelector('.disp-dirref').textContent));
+    ok('payloadOn=false ならペイロード対象は無効', host.querySelector('[data-k="tPay"]').disabled === true);
+    const lfTags = () => [document.querySelectorAll('script[src*="leaflet"]').length, document.querySelectorAll('link[href*="leaflet"]').length];
+    ok('mount だけでは Leaflet を読まない', lfTags().join() === '0,0' && !T.leafletState().loading, lfTags().join());
+    D.setVisible(true);
+    if (useLeaflet) ok('最初の setVisible(true) で Leaflet の JS と CSS を 1 回だけ読む（1.9.4・cdnjs）', lfTags().join() === '1,1' && document.querySelector('script[src*="leaflet"]').src === 'https://cdnjs.cloudflare.com/ajax/libs/leaflet/1.9.4/leaflet.min.js' && document.querySelector('link[href*="leaflet"]').href === 'https://cdnjs.cloudflare.com/ajax/libs/leaflet/1.9.4/leaflet.min.css', lfTags().join());
+    D.setVisible(false); D.setVisible(true);
+    if (useLeaflet) ok('2 回目の setVisible(true) では読み直さない', lfTags().join() === '1,1', lfTags().join());
+    ok('風速の色はグラデーション（0 m/s は白、風速ごとに違う色）', T.spdCol(0, 4) === '#e6ecf8' && new Set([1, 2, 3].map(i => T.spdCol(i, 4))).size === 3 && /^#[0-9a-f]{6}$/.test(T.spdCol(3, 4)), [0, 1, 2, 3].map(i => T.spdCol(i, 4)).join(','));
+
+    // ---- 計算（無風 + 2,4 m/s × 8 方位、弾道＋減速） ----
+    const t0 = performance.now();
+    await T.run();
+    const R = T.result();
+    ok('計算が終わる', !!R && !T.isBusy(), host.querySelector('.disp-msg').textContent);
+    ok('実行回数 = (1 + 2×8) × 2 = 34', R && R.nRun === 34 && R.rows.length === 34, R && R.rows.length);
+    out.push(`  （34 回で ${((performance.now() - t0) / 1000).toFixed(2)} s）`);
+    const err = R.rows.filter(w => w.err);
+    ok('エラーの実行が無い', err.length === 0, err.slice(0, 2).map(w => w.err).join(' / '));
+    ok('全実行が着地', R.rows.every(w => w.landed));
+    ok('0 m/s は 1 点（モードごと）', R.rows.filter(w => w.s === 0).length === 2);
+    const md = (m, s) => { const a = R.rows.filter(w => w.mode === m && w.s === s); return a.reduce((t, w) => t + w.dist, 0) / a.length; };
+    ok('風速が大きいほど落下距離が伸びる（減速落下）', md('recovery', 4) > md('recovery', 2) && md('recovery', 2) > md('recovery', 0), [0, 2, 4].map(s => md('recovery', s).toFixed(0)).join(' < '));
+    const w270 = R.rows.find(w => w.mode === 'recovery' && w.s === 4 && w.from === 270);
+    ok('西風（from 270°）で減速落下は東へ流れる', w270 && w270.x > 50, w270 && `${w270.x.toFixed(0)}, ${w270.y.toFixed(0)}`);
+    const w0 = R.rows.find(w => w.mode === 'recovery' && w.s === 4 && w.from === 0);
+    ok('北風（from 0°）で減速落下は南へ流れる', w0 && w0.y < -50, w0 && `${w0.x.toFixed(0)}, ${w0.y.toFixed(0)}`);
+    // 風下へ流れる: 各風向で、無風の着地点からの変位を風下方向に射影すると 0 < d(2 m/s) < d(4 m/s)（normalizeCfg({}) の減速落下）
+    const dwProj = (m, s, di) => { const z0 = R.rows.find(w => w.mode === m && w.s === 0), w = R.rows.find(v => v.mode === m && v.s === s && v.di === di); if (!z0 || !w) return NaN; const u = G.downwindUnit(w.fromTrue); return (w.x - z0.x) * u[0] + (w.y - z0.y) * u[1]; };
+    const dwTxt = m => R.dirs.map((d, di) => `${d}°:${dwProj(m, 2, di).toFixed(0)}/${dwProj(m, 4, di).toFixed(0)}`).join(' ');
+    ok('減速落下: 全 8 方位で着地点が風下へ流れ、風速とともに遠くなる', R.dirs.length === 8 && R.dirs.every((d, di) => dwProj('recovery', 2, di) > 0 && dwProj('recovery', 4, di) > dwProj('recovery', 2, di)), dwTxt('recovery'));
+    const crossMax = Math.max(...R.dirs.map((d, di) => { const z0 = R.rows.find(w => w.mode === 'recovery' && w.s === 0), w = R.rows.find(v => v.mode === 'recovery' && v.s === 4 && v.di === di), u = G.downwindUnit(w.fromTrue); return Math.abs(-(w.x - z0.x) * u[1] + (w.y - z0.y) * u[0]) / dwProj('recovery', 4, di); }));
+    ok('減速落下: 風に直交するずれは風下成分より小さい', crossMax < 0.5, crossMax.toFixed(3));
+    out.push(`  （風下方向の変位 [m] 2/4 m/s — 減速落下 ${dwTxt('recovery')}）`);
+    out.push(`  （参考: 弾道落下 ${dwTxt('ballistic')}。弾道はウェザーコックで風上に出ることがあるため判定しない）`);
+    ok('緯度経度は enuToLatLon で計算', R.rows.every(w => { const p = enuToLatLon(R.lat0, R.lon0, w.x, w.y); return near(p[0], w.lat, 1e-12) && near(p[1], w.lon, 1e-12); }));
+    ok('要約: 頂点高度の最大が出る', R.sum.apo && R.sum.apo.v > 100 && /頂点高度の最大/.test(host.textContent), R.sum.apo && R.sum.apo.v);
+    ok('要約: ランチクリア迎角', R.sum.clr && R.sum.clr.v > 0 && R.sum.clr.v < 45 && /ランチクリア迎角/.test(host.textContent));
+    ok('要約: dtApo と開傘時の対気速度', /dtApo/.test(host.textContent) && /開傘時の対気速度/.test(host.textContent) && R.sum.va1 && R.sum.va1.v > 0);
+    ok('zones 空: ○/× と go_nogo は出さない', R.hasZones === false && ![...host.querySelectorAll('.disp-res td')].some(td => /[○×]/.test(td.textContent)) && R.rows.every(w => w.ok === null) && host.querySelector('.disp-gng').disabled && T.gngText() === '');
+    // CSV
+    const csv = T.csvText().trim().split('\n');
+    ok('CSV ヘッダが契約どおり', csv[0] === 'mode,elev_deg,wind_mps,wind_from_true_deg,wind_from_mag_deg,east_m,north_m,lat,lon,dist_m,t_s,v_mps,vz_mps,apogee_m,apogee_t_s,railExit_V_mps,deploy1_dtApo_s,deploy2_dtApo_s,payload_dtApo_s,deploy1_Va_mps,payload_Va_mps,ok');
+    ok('CSV 行数と列数', csv.length === 35 && csv.slice(1).every(l => l.split(',').length === 22), csv.length);
+    const r1 = csv.find(l => l.startsWith('recovery,85,4,90,'));
+    ok('CSV: 真方位・磁方位（偏角 0）', !!r1 && r1.split(',')[4] === '90', r1);
+    host.querySelector('.disp-csv').click(); host.querySelector('.disp-kml').click();
+    ok('download() で CSV / KML を出す', __dl.length === 2 && /_dispersion\.csv$/.test(__dl[0].name) && __dl[0].type === 'text/csv' && /_dispersion\.kml$/.test(__dl[1].name), __dl.map(d => d.name).join(','));
+    const kd = new DOMParser().parseFromString(T.kmlText(), 'application/xml');
+    ok('KML が XML として正しい', !kd.querySelector('parsererror'));
+    ok('KML: 点の Placemark と風速ごとの LineString', kd.querySelectorAll('Point').length >= 35 && kd.querySelectorAll('LineString').length === 4, `${kd.querySelectorAll('Point').length} / ${kd.querySelectorAll('LineString').length}`);
+    // 代替 canvas
+    await wait(50);
+    const cv = host.querySelector('.disp-cv');
+    if (!useLeaflet) {
+      const px = cv.width ? cv.getContext('2d').getImageData(0, 0, cv.width, cv.height).data : [];
+      let lit = 0; for (let i = 3; i < px.length; i += 4) if (px[i]) lit++;
+      ok('Leaflet 無し: ENU 平面の canvas に描く', cv.clientHeight > 200 && lit > 1000 && !cv.classList.contains('disp-hide'), `${cv.clientWidth}x${cv.clientHeight} lit=${lit}`);
+      ok('凡例が出る', !host.querySelector('.disp-legend').classList.contains('disp-hide') && /弾道落下/.test(host.querySelector('.disp-legend').textContent));
+      ok('Leaflet が読めないときは代替表示である旨を出す', /Leaflet/.test(host.querySelector('.disp-mapnote').textContent) && /平面図/.test(host.querySelector('.disp-mapnote').textContent) && T.leafletState().fail, host.querySelector('.disp-mapnote').textContent);
+      const hs = T.hits(), rc = cv.getBoundingClientRect();
+      ok('代替 canvas: 着地点（34 点）と射点を当たり判定に登録', hs.length === 35 && hs.some(h => h.t === '射点'), hs.length);
+      const hp = hs.find(h => /減速落下・4 m\/s/.test(h.t));
+      const rcNow = cv.getBoundingClientRect();   // ok() が結果欄を伸ばすので、位置は投げる直前に取る
+      cv.dispatchEvent(new MouseEvent('mousemove', { clientX: rcNow.left + hp.x, clientY: rcNow.top + hp.y, bubbles: true }));
+      const tipEl = host.querySelector('.disp-tip');
+      ok('代替 canvas: 点にカーソルを当てるとツールチップ', !tipEl.classList.contains('disp-hide') && /減速落下・4 m\/s/.test(tipEl.textContent) && /距離 \d+ m/.test(tipEl.textContent), `tip="${tipEl.textContent}" hp=${hp && [hp.x.toFixed(1), hp.y.toFixed(1)]} rc=${[rc.left, rc.top, rc.width, rc.height].map(v => v.toFixed(1))} now=${(() => { const r2 = cv.getBoundingClientRect(); return [r2.left, r2.top].map(v => v.toFixed(1)); })()} cls=${tipEl.className}`);
+      cv.dispatchEvent(new MouseEvent('mouseleave'));
+      ok('代替 canvas: カーソルが離れるとツールチップを消す', tipEl.classList.contains('disp-hide'));
+      const bx = hs.filter(h => h.t !== '射点');
+      ok('代替 canvas: 全点が描画範囲に収まる（範囲合わせ）', bx.every(h => h.x >= 0 && h.x <= cv.clientWidth && h.y >= 0 && h.y <= cv.clientHeight));
+      D.setVisible(false); host.querySelector('.disp-mapwrap').style.width = '360px'; D.setVisible(true); await wait(400);
+      ok('代替 canvas: 再表示で新しい幅に描き直す', Math.abs(cv.width - Math.round(cv.clientWidth * (devicePixelRatio || 1))) <= 1 && Math.abs(cv.clientWidth - 358) <= 3 && T.hits().every(h => h.x <= cv.clientWidth), `${cv.width} / ${cv.clientWidth}`);
+      host.querySelector('.disp-mapwrap').style.width = ''; D.setVisible(true); await wait(400);
+    }
+
+    // ---- 許可域を足すと再計算なしで判定（大きな円 → 全 OK）----
+    const lat1 = cfg.lat, lon1 = cfg.lon;
+    host.querySelector('.disp-clat').value = lat1; host.querySelector('.disp-clon').value = lon1; host.querySelector('.disp-cr').value = 50000;
+    host.querySelector('.disp-cadd').click();
+    ok('円を追加すると opt.zones に入り保存される', T.opt().zones.length === 1 && JSON.parse(localStorage.getItem('student-rocket-sim:disp')).zones.length === 1);
+    const Tb = R.tab[0];
+    ok('大きな許可域: 全セル ○・許容風速 = 最大（≥4）', R.hasZones && Tb.all === 4 && Tb.allow.every(a => a.v === 4 && a.lim == null) && /≥4 m\/s/.test(host.textContent), JSON.stringify(Tb.allow.map(a => a.v)));
+    let g = T.gngText().trim().split('\n');
+    ok('go_nogo.csv ヘッダと行（8 方位＋all）', g[0] === 'elev_deg,wind_from_deg,dir_ref,allowed_max_mps,limiting_mode,limiting_wind_mps' && g.length === 10 && g[9].startsWith('85,all,true,4,'), g.slice(0, 3).join(' | ') + ' … ' + g[9]);
+    host.querySelector('.disp-gng').click();
+    ok('go_nogo.csv を download()', __dl.length === 3 && __dl[2].name === 'go_nogo.csv');
+    // 小さな円（0 m/s でも外）→ 打上げ不可
+    T.opt().zones[0].r_m = 1; host.querySelector('[data-k="margin"]').dispatchEvent(new Event('change', { bubbles: true }));
+    ok('0 m/s が NG なら「打上げ不可」', R.tab[0].all === null && /打上げ不可/.test(host.textContent) && T.gngText().includes('85,all,true,NOGO'));
+    // 中間の半径: allow(θ) は「その風速以下が全部 OK」の最大
+    const dRec = R.rows.filter(w => w.mode !== 'payload').map(w => w.dist).sort((a, b) => a - b);
+    const rMid = (Math.max(...R.rows.filter(w => w.s <= 2).map(w => w.dist)) + Math.max(...R.rows.filter(w => w.s === 4).map(w => w.dist))) / 2;
+    T.opt().zones[0].r_m = rMid; T.opt().margin = 0; host.querySelector('[data-k="margin"]').value = 0; host.querySelector('[data-k="margin"]').dispatchEvent(new Event('change', { bubbles: true }));
+    const Tm = R.tab[0];
+    const exp = R.dirs.map((d, di) => { let v = null; for (let si = 0; si < R.speeds.length; si++) { const s = R.speeds[si]; const rows = R.rows.filter(w => w.si === si && (s === 0 || w.di === di)); if (rows.every(w => w.landed && w.dist <= rMid)) v = s; else break; } return v; });
+    ok('allow(θ) が定義どおり（円の中心＝射点で手計算と一致）', JSON.stringify(Tm.allow.map(a => a.v)) === JSON.stringify(exp), JSON.stringify(Tm.allow.map(a => a.v)) + ' vs ' + JSON.stringify(exp));
+    ok('全方位の許容風速 = min allow(θ)', Tm.all === Math.min(...exp.map(v => v == null ? -Infinity : v)) || (Tm.all === null && exp.includes(null)));
+    const tds = host.querySelectorAll('.disp-res table.disp-tbl')[0].querySelectorAll('td');
+    ok('○/× 行列（0 m/s は 1 セル + 2 風速 × 8 方位）', tds.length === 17 && [...tds].every(td => /^[○×]$/.test(td.textContent)) && tds[0].colSpan === 8, tds.length);
+    ok('制限要因（モードと風速）を出す', Tm.allow.some(a => a.lim != null) ? /m\/s (弾道落下|減速落下)/.test(host.querySelector('.disp-res').textContent) : true);
+    g = T.gngText().trim().split('\n');
+    ok('go_nogo: limiting_mode / limiting_wind', g.slice(1, 9).every(l => { const c = l.split(','); return c.length === 6 && (c[5] === '' || ['2', '4'].includes(c[5])) && (c[5] === '' ? c[4] === '' : /^(ballistic|recovery)(\+(ballistic|recovery))?$/.test(c[4])); }), g.slice(1, 4).join(' | '));
+    ok('CSV の ok 列が判定と一致', T.csvText().trim().split('\n').slice(1).every((l, i) => l.split(',')[21] === (R.rows[i].ok ? '1' : '0')));
+
+    // ---- markStale / 注意文 ----
+    ok('結果直後は「再計算」表示なし', host.querySelector('.disp-stale').classList.contains('disp-hide'));
+    cfg = normalizeCfg({ ...cfg, thrustKind: 'assumed' });
+    D.markStale();
+    ok('markStale で「設定変更あり・再計算してください」', !host.querySelector('.disp-stale').classList.contains('disp-hide') && /設定変更あり・再計算してください/.test(host.querySelector('.disp-stale').textContent));
+    ok("thrustKind 'assumed' の注意文", !host.querySelector('.disp-assumed').classList.contains('disp-hide') && /推力履歴は仮定（Isp 170 s）。審査提出には地上燃焼試験の推力履歴を使用すること/.test(host.querySelector('.disp-assumed').textContent));
+
+    // ---- 中止 ----
+    sp.value = '1,2,3,4,5,6,7'; sp.dispatchEvent(new Event('change', { bubbles: true }));
+    const before = T.result(), p = T.run();
+    ok('計算中は進捗バーと中止ボタンが出て、実行ボタンは押せない', T.isBusy() && !host.querySelector('.disp-prog').classList.contains('disp-hide') && !host.querySelector('.disp-stop').disabled && host.querySelector('.disp-go').disabled && /計算中/.test(host.querySelector('.disp-msg').textContent));
+    host.querySelector('.disp-stop').click(); await p;
+    ok('中止すると前の結果を残して止まる', T.result() === before && !T.isBusy() && /中止/.test(host.querySelector('.disp-msg').textContent) && host.querySelector('.disp-prog').classList.contains('disp-hide'), host.querySelector('.disp-msg').textContent);
+    ok('中止しても「再計算」表示は残る（前の結果は古いまま）', !host.querySelector('.disp-stale').classList.contains('disp-hide'));
+
+    // ---- 磁北基準・複数射角・ペイロード（小さめの計算）----
+    cfg = normalizeCfg({ ...cfg, thrustKind: 'measured', windDirRef: 'magnetic', magDecl: -7, payloadOn: true, payloadTime: 6 });
+    sp.value = '3'; sp.dispatchEvent(new Event('change', { bubbles: true }));
+    const el = host.querySelector('[data-k="elevs"]'); el.value = '80, 85'; el.dispatchEvent(new Event('change', { bubbles: true }));
+    D.markStale();
+    ok('payloadOn でペイロード対象が有効', host.querySelector('[data-k="tPay"]').disabled === false && /磁北/.test(host.querySelector('.disp-dirref').textContent));
+    await T.run();
+    const R2 = T.result();
+    ok('複数射角: 射角ごとの表', R2 && R2.elevs.length === 2 && R2.tab.length === 2 && host.querySelectorAll('.disp-all').length === 2 && !host.querySelector('.disp-mapbar').classList.contains('disp-hide'));
+    ok('再計算で「再計算」表示が消える', host.querySelector('.disp-stale').classList.contains('disp-hide'));
+    const m90 = R2.rows.find(w => w.mode === 'recovery' && w.s === 3 && w.from === 90);
+    ok('磁北基準: 真方位 = 風向 + 偏角', m90 && m90.fromTrue === 83 && m90.fromMag === 90, m90 && `${m90.fromTrue}/${m90.fromMag}`);
+    const c2 = T.csvText().split('\n').find(l => l.startsWith('recovery,80,3,83,90,'));
+    ok('CSV: wind_from_true / wind_from_mag', !!c2, T.csvText().split('\n')[3]);
+    ok('go_nogo の dir_ref = magnetic', T.gngText().split('\n')[1].split(',')[2] === 'magnetic');
+    const pay = R2.rows.filter(w => w.mode === 'payload');
+    ok('ペイロード行がある（減速落下の実行の payload.landing）', pay.length === 2 * (1 + 8));
+    const payLanded = pay.filter(w => w.landed).length;
+    if (payLanded) ok('ペイロードの着地点', payLanded === pay.length, `${payLanded}/${pay.length}`);
+    else out.push('  （physics.js がまだ payload を返さないため、ペイロード着地は未検証: ' + (pay[0] && pay[0].err) + '）');
+    ok('ペイロードが着地しないなら NG', pay.every(w => w.landed || w.ok === false));
+
+    // ---- ペイロード経路（physics.js が payload を返さない間は simulate を包んで合成する）----
+    const sim0 = simulate;
+    if (!payLanded) {
+      __shim.push('simulate(payload 合成)');
+      window.simulate = (M, o) => {
+        const s = sim0(M, o);
+        if (!s.payload) {
+          const L = s.ev && s.ev.landing, A = s.ev && s.ev.apogee;
+          s.payload = { release: { t: 6, x: 0, y: 0, z: 300, V: 20 }, rec: [], landing: L ? { t: L.t + 20, x: L.x * 1.5 + 30, y: L.y * 1.5, V: 6, vz: -6 } : null };
+          s.ev.payload = { t: A ? A.t + 0.5 : 6, z: 300, V: 20, q: 240 };
+        }
+        return s;
+      };
+    }
+    const tb = host.querySelector('[data-k="tBal"]'); tb.checked = false; tb.dispatchEvent(new Event('change', { bubbles: true }));
+    el.value = ''; el.dispatchEvent(new Event('change', { bubbles: true }));
+    await T.run();
+    const R3 = T.result(), p3 = R3.rows.filter(w => w.mode === 'payload'), rc3 = R3.rows.filter(w => w.mode === 'recovery');
+    ok('ペイロード: 減速落下と同じ実行から 1 点ずつ（弾道なし）', R3.nRun === 9 && p3.length === 9 && rc3.length === 9 && p3.every((w, i) => w.fs === rc3[i].fs), `${R3.nRun} ${p3.length}`);
+    ok('ペイロード: 着地点・CSV の payload 行と payload_dtApo', p3.every(w => w.landed) && T.csvText().split('\n').filter(l => l.startsWith('payload,')).length === 9 && T.csvText().split('\n').filter(l => l.startsWith('payload,')).every(l => l.split(',')[18] !== ''));
+    ok('ペイロード: 要約に放出時の対気速度と dtApo', /ペイロード放出時の対気速度/.test(host.textContent) && /ペイロード放出−頂点 dtApo/.test(host.textContent));
+    ok('凡例にペイロード（点線）', /ペイロード/.test(host.querySelector('.disp-legend').textContent) && /stroke-dasharray="2,5"/.test(host.querySelector('.disp-legend').innerHTML));
+    // 減速落下は全部入り、ペイロードだけはみ出す半径 → 制限要因は payload
+    const rMax = Math.max(...rc3.map(w => w.dist)) + 1;
+    T.opt().zones[0].r_m = rMax; host.querySelector('[data-k="margin"]').dispatchEvent(new Event('change', { bubbles: true }));
+    const T3 = R3.tab[0];
+    ok('セルの OK = 全対象（減速落下＋ペイロード）の着地点が OK', T3.cells.every((row, si) => row.every((c, di) => c.ok === c.rows.every(w => w.dist <= rMax)) ) && rc3.every(w => w.ok));
+    const g3 = T.gngText().trim().split('\n').slice(1);
+    ok('go_nogo: ペイロードが制限要因になる', g3.some(l => l.split(',')[4] === 'payload') && g3.every(l => !/recovery/.test(l.split(',')[4])), g3.slice(0, 3).join(' | '));
+    ok('KML: ペイロードのフォルダ', /<name>ペイロード・射角/.test(T.kmlText()));
+    window.simulate = sim0;
+
+    if (useLeaflet) {
+      await wait(4000);
+      const st = T.leafletState();
+      ok('Leaflet を読み込んで地図を出す', st.map && !!host.querySelector('.leaflet-container') && /OpenStreetMap/.test(host.textContent), JSON.stringify(st));
+      ok('Leaflet: SVG レンダラで線と点を描く', host.querySelectorAll('.leaflet-overlay-pane svg path').length > 20 && !host.querySelector('.leaflet-container canvas'), host.querySelectorAll('.leaflet-overlay-pane svg path').length);
+      ok('Leaflet: 代替 canvas は隠す', host.querySelector('.disp-cv').classList.contains('disp-hide'));
+      ok('Leaflet: OSM タイルと帰属表示', /tile\.openstreetmap\.org/.test([...host.querySelectorAll('.leaflet-tile')].map(i => i.src).join(' ') || 'tile.openstreetmap.org(未読込)') && /OpenStreetMap/.test((host.querySelector('.leaflet-control-attribution') || {}).textContent || ''));
+      // 減速落下＋ペイロード（R3 相当: 3 m/s × 16 方位）。ペイロードは点線、減速落下は実線
+      T.opt().zones = []; host.querySelector('[data-k="margin"]').dispatchEvent(new Event('change', { bubbles: true }));
+      const paths = [...host.querySelectorAll('.leaflet-overlay-pane svg path')];
+      const lines = paths.filter(p => p.getAttribute('fill') === 'none');
+      ok('Leaflet: 閉曲線 = 減速落下（実線）とペイロード（点線）', lines.some(p => p.getAttribute('stroke-dasharray') === '2,5') && lines.some(p => !p.getAttribute('stroke-dasharray')), lines.map(p => p.getAttribute('stroke-dasharray')).join('|'));
+      const mapRc = host.querySelector('.disp-map').getBoundingClientRect();
+      const marks = paths.filter(p => p.getAttribute('fill') !== 'none').map(p => p.getBoundingClientRect()).filter(b => b.width < 20);
+      ok('Leaflet: fitBounds で全点が地図内に入る', marks.length >= 18 && marks.every(b => b.left + b.width / 2 >= mapRc.left && b.left + b.width / 2 <= mapRc.right && b.top + b.height / 2 >= mapRc.top && b.top + b.height / 2 <= mapRc.bottom), `${marks.length} 点`);
+      const mk = paths.filter(p => p.getAttribute('fill') !== 'none' && p.getBoundingClientRect().width < 12)[0];
+      if (mk) { const b = mk.getBoundingClientRect(); mk.dispatchEvent(new MouseEvent('mouseover', { bubbles: true, clientX: b.left + b.width / 2, clientY: b.top + b.height / 2 })); }
+      await wait(50);
+      const tt = host.querySelector('.leaflet-tooltip');
+      ok('Leaflet: 点にカーソルを当てるとツールチップ', !!tt && /m\/s/.test(tt.textContent) && /距離/.test(tt.textContent), tt ? tt.textContent : 'tooltip なし');
+      ok('Leaflet: 凡例を地図に重ねる', !host.querySelector('.disp-legend').classList.contains('disp-hide') && /減速落下/.test(host.querySelector('.disp-legend').textContent));
+      D.setVisible(false); host.querySelector('.disp-mapwrap').style.width = '400px'; D.setVisible(true);
+      // ヘッドレス（仮想時間）では requestAnimationFrame が回らない。dispersion.js は 250 ms のタイマーでも invalidateSize する
+      await wait(400);
+      const pane = host.querySelector('.leaflet-container');
+      const sz = T.leafletState().size;
+      ok('Leaflet: 再表示で invalidateSize（地図の内部サイズが新しい幅に追従）', !!pane && !!sz && Math.abs(sz[0] - pane.clientWidth) <= 1 && Math.abs(pane.clientWidth - 400) <= 2, pane && `${pane.clientWidth} / ${sz}`);
+      host.querySelector('.disp-mapwrap').style.width = '';
+    }
+  } catch (e) {
+    ok('例外なし', false, e && (e.stack || e.message || e));
+  }
+  show();
+})();
+</script>
+</body>
+</html>

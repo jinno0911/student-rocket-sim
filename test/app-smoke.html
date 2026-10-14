@@ -1,0 +1,105 @@
+<!doctype html>
+<html lang="ja"><head><meta charset="utf-8"><title>app smoke test</title>
+<style>body{font:13px system-ui;margin:12px}iframe{width:1200px;height:800px;border:1px solid #888}.PASS{color:#080}.FAIL{color:#c00;font-weight:700}</style></head>
+<body>
+<h1>アプリ結合スモークテスト</h1>
+<p>http://localhost:8775/test/app-smoke.html で開く（ヘッドレス: <code>bash test/headless.sh http://localhost:8775/test/app-smoke.html 90000</code>）</p>
+<pre id="result">running…</pre>
+<table id="tbl"></table>
+<script>
+// 本体を同一オリジンの iframe に読み込み、グローバル（cfg, applyCfg, model, sim …）を contentWindow.eval で操作して確かめる
+const rows = []; let pass = 0, fail = 0;
+const ok = (name, cond, val = '') => { cond ? pass++ : fail++; rows.push(`<tr><td class="${cond ? 'PASS' : 'FAIL'}">${cond ? 'PASS' : 'FAIL'}</td><td>${name}</td><td>${String(val).slice(0, 200)}</td></tr>`); };
+const sleep = ms => new Promise(r => setTimeout(r, ms));
+function load(setup) {
+  return new Promise(res => {
+    const f = document.createElement('iframe');
+    f.src = '../index.html?smoke=' + Math.random();
+    const errs = [];
+    f.addEventListener('load', async () => {
+      const w = f.contentWindow;
+      w.addEventListener('error', e => errs.push(e.message));
+      await sleep(600);
+      res({ f, w, errs, ev: s => w.eval(s) });
+    });
+    if (setup) { try { setup(); } catch (e) {} }
+    document.body.appendChild(f);
+  });
+}
+const near = (a, b, tol) => Number.isFinite(a) && Math.abs(a - b) <= tol;
+
+(async () => {
+  try {
+    // 1) 既定設定で起動・結果表示・エラーなし
+    localStorage.removeItem('student-rocket-sim:cfg');
+    let A = await load();
+    A.ev('applyCfg({...DEFAULTS}); runNominal()');
+    ok('既定設定: 頂点高度 ≈ 1636 m', near(A.ev('flightSummary(model, sim).apogee_m'), 1636, 50), A.ev('flightSummary(model, sim).apogee_m'));
+    ok('既定設定: 結果カードが描画される', A.w.document.querySelectorAll('.res').length >= 10, A.w.document.querySelectorAll('.res').length);
+    ok('既定設定: 偏角の注意が出ない', !/磁気偏角/.test(A.w.document.getElementById('warnings').innerText));
+    ok('window.V3D / SpecSheet / Dispersion が公開されている', A.ev('!!(window.V3D && window.SpecSheet && window.Dispersion)'));
+    A.ev('window.V3D.markDirty()'); ok('V3D.markDirty は例外を出さない', true);
+
+    // 2) Debug 諸元
+    A.ev('applyCfg({...DEFAULTS, ...SpecSheet.DEBUG_PRESET}); runNominal()');
+    const rv = A.ev('reviewValues(model)');
+    ok('Debug: 充填時 Fst 14.792 %', near(rv.fstWet_pct, 14.792, 0.002), rv.fstWet_pct);
+    ok('Debug: 非充填時 Fst 15.593 %', near(rv.fstDry_pct, 15.593, 0.002), rv.fstDry_pct);
+    ok('Debug: 1段目 CdS 1.53567', near(rv.cdS1_m2, 1.53567, 2e-4), rv.cdS1_m2);
+    ok('Debug: 真方位 187.6°', near(rv.trueAzim_deg, 187.6, 1e-6), rv.trueAzim_deg);
+    const wtxt = A.w.document.getElementById('warnings').innerText;
+    ok('Debug: 偏角の符号の注意が出る', /磁気偏角/.test(wtxt));
+    ok('Debug: 仮定推力のバナーが出る', /推力履歴は仮定/.test(A.w.document.body.innerText));
+    ok('Debug: 仮定曲線で作動時間の不一致を警告しない', !/作動時間 .* と 0.1 s 以上違います/.test(wtxt));
+    ok('Debug: ペイロードが着地する', A.ev('!!(sim.payload && sim.payload.landing)'));
+
+    // 3) posRef 'aft' の表示と入力
+    A.ev("applyCfg({...cfg, posRef:'aft'})");
+    const inp = A.w.document.getElementById('f_hDryCG');
+    ok('posRef aft: 乾燥時重心は 591.48 と表示', inp && Math.abs(parseFloat(inp.value) - 591.48) < 1e-6, inp && inp.value);
+    inp.value = '600'; inp.dispatchEvent(new Event('input', { bubbles: true })); await sleep(50);
+    ok('posRef aft: 600 と入力すると先端基準 1000 で保存', near(A.ev('cfg.hDryCG'), 1000, 1e-6), A.ev('cfg.hDryCG'));
+
+    // 4) 実際の諸元表 xlsx を読み込む
+    const buf = await (await fetch('fixtures/spec.xlsx')).arrayBuffer();
+    A.w.__buf = buf;
+    const imp = await A.ev('SpecSheet.importFile(window.__buf, normalizeCfg({}))');
+    ok('xlsx 読込: 41 項目前後を読み込む', imp.imported.length >= 35, imp.imported.length);
+    ok('xlsx 読込: 補完項目がある（フィン枚数など）', imp.supplemented.some(s => s.key === 'finN'));
+    A.w.__patch = imp.patch; A.ev('applyCfg({...normalizeCfg({}), ...window.__patch}); runNominal()');
+    ok('xlsx 読込後: 計算エラーなし', A.ev('!sim.ev.error'));
+
+    // 5) 落下分散（0,3 m/s × 8 方位）
+    A.ev("document.querySelector('[data-tab=\"disp\"]').click()"); await sleep(200);
+    const D = A.w.document.getElementById('dispersion');
+    const sp = [...D.querySelectorAll('input[type=text]')][0]; sp.value = '3'; sp.dispatchEvent(new Event('input', { bubbles: true })); sp.dispatchEvent(new Event('change', { bubbles: true }));
+    const dirSel = D.querySelector('select'); dirSel.value = '8'; dirSel.dispatchEvent(new Event('change', { bubbles: true }));
+    D.querySelector('.disp-csite').click();                       // 射点中心・半径 600 m の許可域
+    const cr = D.querySelector('.disp-cr'); cr.value = '600'; cr.dispatchEvent(new Event('input', { bubbles: true })); cr.dispatchEvent(new Event('change', { bubbles: true }));
+    D.querySelector('.disp-cadd').click();
+    let csv = null; A.w.download = (name, text) => { if (/\.csv$/.test(name) && !/go_nogo/.test(name)) csv = text; };
+    D.querySelector('.disp-go').click();
+    for (let i = 0; i < 200 && !/回の計算が終わりました/.test(D.innerText); i++) await sleep(100);
+    ok('落下分散: 計算が終わる', /回の計算が終わりました/.test(D.innerText));
+    ok('落下分散: ○/× 表が出る', /許容風速/.test(D.innerText));
+    D.querySelector('.disp-csv').click(); await sleep(50);
+    ok('落下分散: CSV が出る', csv && csv.split('\n').length > 10, csv ? csv.split('\n').length + ' 行' : 'null');
+
+    ok('実行中の例外なし（A）', A.errs.length === 0, A.errs.join(' / '));
+
+    // 6) 旧設定 {recMode:'none'} の移行
+    localStorage.setItem('student-rocket-sim:cfg', JSON.stringify({ recMode: 'none' }));
+    const B = await load();
+    ok('旧キー移行: recMode none → rec1 none', B.ev('cfg.rec1') === 'none' && B.ev('cfg.recMode') === undefined, B.ev('cfg.rec1'));
+    ok('実行中の例外なし（B）', B.errs.length === 0, B.errs.join(' / '));
+    localStorage.removeItem('student-rocket-sim:cfg');
+
+    // 7) recMode が UI に残っていない
+    const appTxt = await (await fetch('../app.js')).text(), v3dTxt = await (await fetch('../view3d.js')).text();
+    ok('app.js / view3d.js に recMode が残っていない', !/recMode/.test(appTxt + v3dTxt));
+  } catch (e) { ok('例外', false, e.stack || e); }
+  document.getElementById('tbl').innerHTML = rows.join('');
+  document.getElementById('result').textContent = `PASS ${pass} / FAIL ${fail}`;
+})();
+</script>
+</body></html>

@@ -1,0 +1,569 @@
+<!doctype html>
+<html lang="ja">
+<head>
+<meta charset="utf-8">
+<meta name="viewport" content="width=device-width,initial-scale=1">
+<title>specsheet テスト</title>
+<style>
+  body { font: 13px/1.5 system-ui, sans-serif; margin: 16px; background: #fff; color: #222; }
+  h1 { font-size: 18px; }
+  pre { background: #f4f4f4; padding: 8px; white-space: pre-wrap; }
+  table { border-collapse: collapse; margin-top: 8px; }
+  td, th { border: 1px solid #ccc; padding: 2px 6px; text-align: left; vertical-align: top; }
+  .PASS { color: #070; } .FAIL { color: #c00; font-weight: bold; } .SKIP { color: #888; }
+</style>
+</head>
+<body>
+<h1>specsheet.js 自己テスト</h1>
+<p>physics.js と specsheet.js だけを読み込み、Debug 諸元表（fixtures/spec.xlsx）と、それを書き換えた xlsx で §4.1 の読込規則を、
+書き出した xlsx で §4.2 の書出し規則と往復（書出し→読込）を確かめる。期待値は fixtures/spec-dump.txt と §3.3 の検算値。</p>
+<pre id="result">実行中…</pre>
+<table><thead><tr><th>#</th><th>判定</th><th>項目</th><th>詳細</th></tr></thead><tbody id="rows"></tbody></table>
+<script src="../physics.js"></script>
+<script>window.__keys0 = new Set(Object.getOwnPropertyNames(window));</script>
+<script src="../specsheet.js"></script>
+<script>
+'use strict';
+(async () => {
+  const res = []; let nP = 0, nF = 0, nS = 0;
+  const T = (name, ok, detail = '') => { const r = ok === null ? 'SKIP' : ok ? 'PASS' : 'FAIL'; r === 'PASS' ? nP++ : r === 'FAIL' ? nF++ : nS++; res.push([r, name, String(detail)]); };
+  const tryT = async (name, fn) => { try { await fn(); } catch (e) { T(name, false, '例外: ' + (e && e.stack || e)); } };
+  const near = (a, b, rel = 1e-9) => typeof a === 'number' && typeof b === 'number' && Math.abs(a - b) <= rel * Math.max(1, Math.abs(b));
+  const eqv = (a, b) => typeof b === 'number' ? near(a, b, 1e-12) : a === b;
+  const pts = text => String(text).split(/\r?\n/).map(l => l.trim()).filter(l => l && !l.startsWith(';')).map(l => l.split(/\s+/).map(Number));
+  const trapz = p => p.reduce((s, q, i) => i ? s + (q[1] + p[i - 1][1]) / 2 * (q[0] - p[i - 1][0]) : 0, 0);
+  const hasPhys = typeof normalizeCfg === 'function' && typeof buildModel === 'function' && typeof PHYS_DEFAULTS !== 'undefined';
+  const jp = s => /[ぁ-んァ-ヶ一-龠]/.test(s);
+  const SS = window.SpecSheet;
+  const I_DEBUG = (391 + 380 - 322) / 1000 * 170 * 9.80665;   // 748.54 N·s
+
+  // ---------- 1. 公開 API とグローバル ----------
+  await tryT('API', async () => {
+    T('window.SpecSheet が公開されている', !!SS && typeof SS.importFile === 'function' && typeof SS.exportXlsx === 'function' && !!SS.DEBUG_PRESET && Array.isArray(SS.DEBUG_SUPPLEMENTS) && Array.isArray(SS.fieldMap));
+    const added = Object.getOwnPropertyNames(window).filter(k => !window.__keys0.has(k) && k !== '__keys0');
+    T('specsheet.js が作るグローバルは SpecSheet だけ（§0.3）', added.join() === 'SpecSheet', added.join());
+    const src = await (await fetch('../specsheet.js')).text();
+    T('トップレベルの const/let/function 宣言が無い', !/^(const|let|var|function|class|async)\s/m.test(src));
+    T('読込時に SheetJS を読まない（遅延読込 §0.4）', !window.XLSX && !document.querySelector('script[src*="xlsx"]'));
+    T('SheetJS の URL は §0.4 の固定 URL', src.includes("'https://cdnjs.cloudflare.com/ajax/libs/xlsx/0.18.5/xlsx.full.min.js'"));
+    const fm = SS.fieldMap;
+    T('fieldMap の形 {item, subItem, key, unit, conv}', fm.every(f => typeof f.item === 'string' && typeof f.subItem === 'string' && typeof f.key === 'string' && typeof f.unit === 'string' && [null, 'aft', 'kg', 'invN'].includes(f.conv)));
+    const byConv = c => fm.filter(f => f.conv === c).map(f => f.key).sort().join();
+    T('fieldMap: aft は 5 項目（重心 4・圧力中心）', byConv('aft') === 'cpManual,hDryCG,hFuelCG,hOxCG,hTankOutlet', byConv('aft'));
+    T('fieldMap: kg は 5 項目', byConv('kg') === 'hDryMass,hFuelPost,hFuelPre,hOxMass,payloadMass', byConv('kg'));
+    T('fieldMap: invN はべき指数', byConv('invN') === 'windExp');
+    const keys = fm.map(f => f.key);
+    T('fieldMap: キーの重複なし', new Set(keys).size === keys.length);
+    T('fieldMap: 団体入力シートの全 43 項目', fm.length === 43, fm.length);
+    T('_buildWorkbook が公開されている（テスト用）', typeof SS._buildWorkbook === 'function');
+  });
+  // 書出しのダウンロードは app.js の download(name, data, type) を使う → テストでは記録だけする（グローバル検査の後で定義）
+  const DL = []; window.download = (name, data, type) => DL.push({ name, data, type });
+
+  // ---------- 2. DEBUG_PRESET（spec-dump.txt 由来） ----------
+  const P = SS.DEBUG_PRESET;
+  const EXP = { name: 'Debug', lat: 35.177228, lon: 140.357056, siteAlt: 0, magDecl: 7.6, azim: 180, azimRef: 'magnetic', elev: 85, railLen: 5, windExp: 1 / 6, windRef: 4,
+    d: 130, noseShape: 'ogive', noseLen: 300, bodyLen: 1300, tailLen: 0, hDryMass: 6190, hOxMass: 391, hFuelPre: 380, hFuelPost: 322,
+    hDryCG: 1600 - 591.48, hOxCG: 1600 - 376, hTankOutlet: 1600 - 220.86, hFuelCG: 1600 - 110.43, hOxDrain: true, Ipitch: 1.5, Iroll: 0.09, inertiaMode: 'manual',
+    cpManual: 1600 - 342, cdManual: 0.37, cdMode: 'manual', cnaManual: 11.8, clp: -0.14, cmq: -2.96, aeroMode: 'manual', nozzleExitD: 18, hBurnTime: 2.393, hOpTime: 3.756,
+    c1Vt: 8.08, rec1: 'apogee', rec2: 'none', chuteSpec: 'velocity', payloadOn: true, payloadTime: 7, payloadVt: 6, payloadMass: 250, payloadPos: 200,
+    finAft: 0, finCr: 210, finCt: 50, finSweep: 160, finSpan: 143.64, finN: 4, finThick: 3, finCant: 0, massMode: 'hybrid', motorSrc: 'eng', motorPreset: 'custom',
+    thrustKind: 'assumed', posRef: 'aft', ballast: 0, openTime: 1, windDirRef: 'true', wind: 4, windFrom: 270, gust: 0, lugAft: 0, landSurface: 'site', mLen: 600, mDia: 60, mOver: 0 };
+  await tryT('DEBUG_PRESET', async () => {
+    const bad = Object.entries(EXP).filter(([k, v]) => !eqv(P[k], v)).map(([k, v]) => `${k}=${P[k]}（期待 ${v}）`);
+    T('DEBUG_PRESET の値（§4.3）', !bad.length, bad.join(', '));
+    T('換算値は完全精度で書く（hDryCG 1008.52, hTankOutlet 1379.14 は厳密一致）', P.hDryCG === 1008.52 && P.hTankOutlet === 1379.14 && P.hFuelCG === 1489.57 && P.windExp === 1 / 6);
+    if (typeof PHYS_DEFAULTS !== 'undefined') {
+      const unk = Object.keys(P).filter(k => !(k in PHYS_DEFAULTS));
+      T('DEBUG_PRESET のキーはすべて PHYS_DEFAULTS にある', !unk.length, unk.join());
+    } else T('DEBUG_PRESET のキーはすべて PHYS_DEFAULTS にある', null, 'PHYS_DEFAULTS なし');
+    const S = SS.DEBUG_SUPPLEMENTS;
+    T('DEBUG_SUPPLEMENTS の形 {key,label,value,unit,reason}', S.every(s => ['key', 'label', 'value', 'unit', 'reason'].every(p => p in s) && s.reason && jp(s.reason)));
+    const need = ['finN', 'finThick', 'finCant', 'engText', 'payloadPos', 'payloadTime', 'rec1', 'openTime', 'windDirRef', 'wind', 'windFrom', 'gust', 'lugAft', 'landSurface', 'mLen', 'mDia', 'mOver', 'magDecl'];
+    const miss = need.filter(k => !S.some(s => s.key === k));
+    T('DEBUG_SUPPLEMENTS に §4.3 の補完項目がそろう', !miss.length, miss.join());
+    const vbad = S.filter(s => typeof s.value === 'number' && P[s.key] !== s.value).map(s => s.key);
+    T('DEBUG_SUPPLEMENTS の値が DEBUG_PRESET と一致', !vbad.length, vbad.join());
+  });
+
+  // ---------- 3. 仮定推力曲線 ----------
+  await tryT('仮定推力', async () => {
+    const lines = String(P.engText).split('\n');
+    T('engText は "t F" 行だけ（.eng ヘッダ・コメント行なし）', lines.every(l => /^\S+ \S+$/.test(l) && l.split(' ').every(x => x !== '' && isFinite(+x))), lines[0]);
+    const p = pts(P.engText), last = p[p.length - 1];
+    if (typeof shapeFn === 'function') {
+      const Fmax0 = Math.max(...p.map(q => q[1])), kk = Fmax0 / shapeFn('regressive', 0.04);
+      const bad = p.filter(q => q[0] <= 0.92 * 2.393 && !near(q[1] / kk, shapeFn('regressive', q[0] / 2.393), 1e-6));
+      T('0〜0.92·t_b は physics の shapeFn(\'regressive\') と同じ形（立上り込み）', !bad.length, bad.slice(0, 3).join(' / '));
+    } else T('shapeFn と同じ形', null, 'shapeFn なし');
+    T('始点 (0, 0)', p[0][0] === 0 && p[0][1] === 0, p[0]);
+    T('終点 (t_op = 3.756, 0)（±1e-9）', Math.abs(last[0] - 3.756) <= 1e-9 && last[1] === 0, last);
+    T('t は単調増加', p.every((q, i) => !i || q[0] > p[i - 1][0]));
+    T('総力積 = (0.391+0.058)·170·g0 = 748.5 N·s（±0.5%）', Math.abs(trapz(p) / I_DEBUG - 1) < 0.005, trapz(p).toFixed(2));
+    const ib = p.findIndex(q => Math.abs(q[0] - 2.393) < 1e-12), Fmax = Math.max(...p.map(q => q[1]));
+    T('t_b に点があり、F(t_b)/Fmax = 0.65/1.226（定常部の値、下がりなし）', ib > 0 && near(p[ib][1] / Fmax, 0.65 / (1.25 - 0.6 * 0.04), 1e-5), ib > 0 && (p[ib][1] / Fmax).toFixed(5));
+    const iPk = p.findIndex(q => q[1] === Fmax);
+    T('立上りは 0.04·t_b で最大、以後は単調減少', near(p[iPk][0], 0.04 * 2.393, 1e-9) && p.slice(iPk).every((q, i, a) => !i || q[1] <= a[i - 1][1]));
+    const k = 4 / (3.756 - 2.393), E = Math.exp(-k * (3.756 - 2.393)), tm = p[ib + 15][0];
+    T('t_b〜t_op は指数減衰の式どおり', near(p[ib + 15][1] / p[ib][1], (Math.exp(-k * (tm - 2.393)) - E) / (1 - E), 1e-5));
+    if (typeof parseEng === 'function') { const e = parseEng(P.engText); T('parseEng で終点が変わらない', e && Math.abs(e.pts[e.pts.length - 1][0] - 3.756) <= 1e-9 && !e.hdr); }
+    if (hasPhys) {
+      const M = buildModel(normalizeCfg({ ...PHYS_DEFAULTS, ...P }));
+      T('buildModel: M.tb = t_op（±1e-9）', Math.abs(M.tb - 3.756) <= 1e-9, M.tb);
+      T('buildModel: M.Itot = 748.5 N·s（±0.5%）', Math.abs(M.Itot / I_DEBUG - 1) < 0.005, M.Itot);
+    } else T('buildModel: M.tb / Itot', null, 'physics.js の normalizeCfg/buildModel なし');
+  });
+
+  // ---------- 4. Debug 諸元表の読込 ----------
+  let ab = null, base = null;
+  await tryT('Debug 読込', async () => {
+    ab = await (await fetch('fixtures/spec.xlsx')).arrayBuffer();
+    base = { ...(typeof PHYS_DEFAULTS !== 'undefined' ? PHYS_DEFAULTS : {}), ...P };
+    const r = await SS.importFile(ab, base);
+    T('importFile が {patch, imported, supplemented, warnings} を返す', r && r.patch && Array.isArray(r.imported) && Array.isArray(r.supplemented) && Array.isArray(r.warnings));
+    T('SheetJS を遅延読込した', !!window.XLSX && document.querySelectorAll('script[src*="xlsx"]').length === 1);
+    const bad = Object.keys(P).filter(k => !eqv(r.patch[k], P[k])).map(k => `${k}=${JSON.stringify(r.patch[k])?.slice(0, 40)}（期待 ${JSON.stringify(P[k]).slice(0, 40)}）`);
+    T('Debug 諸元表の読込結果が DEBUG_PRESET と一致（engText 含む）', !bad.length, bad.join(', '));
+    const must = { name: 'Debug', massMode: 'hybrid', aeroMode: 'manual', inertiaMode: 'manual', chuteSpec: 'velocity', motorSrc: 'eng', motorPreset: 'custom', tailLen: 0, azimRef: 'magnetic', posRef: 'aft', ballast: 0 };
+    const mb = Object.entries(must).filter(([k, v]) => r.patch[k] !== v).map(([k]) => k);
+    T('patch に必須キー（§4）', !mb.length, mb.join());
+    T('declCheck の警告（+7.6 は西偏でない）', r.warnings.some(w => w.includes('西偏') && w.includes('7.6')), r.warnings.join(' / '));
+    T('仮定推力の注意文が warnings にある', r.warnings.some(w => w.includes('推力履歴は仮定（Isp 170 s）')));
+    T('warnings はすべて日本語の文字列', r.warnings.every(w => typeof w === 'string' && jp(w)));
+    T('imported の形', r.imported.every(x => ['key', 'label', 'value', 'unit', 'sheetLabel', 'sheetValue', 'sheetUnit'].every(p => p in x)));
+    const im = k => r.imported.find(x => x.key === k) || {};
+    T('imported: 乾燥時重心 591.48 mm（後端）→ hDryCG 1008.52 mm（先端）', im('hDryCG').sheetValue === 591.48 && im('hDryCG').value === 1008.52 && im('hDryCG').sheetUnit === 'mm' && im('hDryCG').sheetLabel === '乾燥時重心位置', JSON.stringify(im('hDryCG')));
+    T('imported: 全長 1600 → bodyLen 1300', im('bodyLen').sheetLabel === '全長' && im('bodyLen').sheetValue === 1600 && im('bodyLen').value === 1300);
+    T('imported: べき指数 6 → windExp 1/6', im('windExp').sheetValue === 6 && im('windExp').value === 1 / 6);
+    T('imported: 酸化剤質量 0.391 kg → 391 g', im('hOxMass').sheetValue === 0.391 && im('hOxMass').value === 391 && im('hOxMass').unit === 'g' && im('hOxMass').sheetUnit === 'kg');
+    T('imported: 基準高さ（単位欄が空欄）は既定単位 m', im('windRef').value === 4 && im('windRef').sheetUnit === 'm');
+    T('imported: 機体名', im('name').value === 'Debug');
+    T('imported: 2段目（空欄）は入れない', !r.imported.some(x => x.key === 'rec2Time' || x.key === 'c2Vt') && !('rec2Time' in r.patch) && !('c2Vt' in r.patch));
+    T('supplemented の形', r.supplemented.every(s => ['key', 'label', 'value', 'unit', 'reason'].every(p => p in s) && jp(s.reason)));
+    const need = ['finN', 'finThick', 'finCant', 'engText', 'payloadPos', 'payloadTime', 'rec1', 'rec2', 'openTime', 'windDirRef', 'wind', 'windFrom', 'gust', 'lugAft', 'landSurface', 'mLen', 'mDia', 'mOver'];
+    const miss = need.filter(k => !r.supplemented.some(s => s.key === k));
+    T('supplemented に補完項目がそろう', !miss.length, miss.join());
+    const r2 = await SS.importFile(new File([ab], 'spec.xlsx'), base);
+    T('File オブジェクトでも読める', r2.patch.hDryCG === 1008.52 && r2.patch.name === 'Debug');
+    const r3 = await SS.importFile(new Uint8Array(ab), {});
+    T('baseCfg が空でも読める（補完は既定値）', r3.patch.hTankOutlet === 1379.14 && r3.supplemented.length > 0 && r3.supplemented.every(s => s.value !== undefined));
+    T('SheetJS の script は 1 個だけ', document.querySelectorAll('script[src*="xlsx"]').length === 1);
+  });
+  if (!window.XLSX || !ab) { finish(); return; }
+
+  // ---------- 5. 書き換えた xlsx で空欄規則・単位・ラベル探索 ----------
+  const X = window.XLSX, SN = '団体入力シート';
+  const book = () => X.read(new Uint8Array(ab), { type: 'array' });
+  const out = wb => X.write(wb, { type: 'array', bookType: 'xlsx' });
+  const imp = (mut, b = base) => { const wb = book(); mut(wb.Sheets[SN], wb); return SS.importFile(out(wb), b); };
+  const set = (ws, a, v) => { ws[a] = typeof v === 'number' ? { t: 'n', v } : { t: 's', v }; };
+  const del = (ws, ...as) => as.forEach(a => delete ws[a]);
+  const hasW = (r, s) => r.warnings.some(w => w.includes(s));
+  const supK = (r, k) => r.supplemented.find(s => s.key === k);
+
+  await tryT('空欄: 1段目', async () => {
+    let r = await imp(ws => del(ws, 'D45'));
+    T('1段目の終端速度が空欄 → rec1 none ＋警告「回収系なし＝弾道落下」', r.patch.rec1 === 'none' && hasW(r, '回収系なし＝弾道落下') && !('c1Vt' in r.patch));
+    r = await imp(ws => set(ws, 'D45', 0));
+    T('1段目の終端速度が 0 → rec1 none', r.patch.rec1 === 'none' && hasW(r, '回収系なし'));
+  });
+  await tryT('空欄: 2段目', async () => {
+    let r = await imp(ws => set(ws, 'D47', 10));
+    T('2段目が片方だけ → rec2 none ＋警告', r.patch.rec2 === 'none' && hasW(r, '片方'));
+    r = await imp(ws => { set(ws, 'D47', 10); set(ws, 'D48', 5); });
+    T('2段目が両方 → rec2 ignition, rec2Time, c2Vt', r.patch.rec2 === 'ignition' && r.patch.rec2Time === 10 && r.patch.c2Vt === 5 && !hasW(r, '片方'));
+    r = await imp(ws => { set(ws, 'D47', 0); set(ws, 'D48', 0); });
+    T('2段目が両方 0 → rec2 none（警告なし、補完に記録）', r.patch.rec2 === 'none' && !hasW(r, '片方') && !!supK(r, 'rec2'));
+  });
+  await tryT('空欄: ペイロード', async () => {
+    let r = await imp(ws => del(ws, 'D51'));
+    T('ペイロードが一部だけ → payloadOn false ＋警告', r.patch.payloadOn === false && hasW(r, 'ペイロード'));
+    r = await imp(ws => del(ws, 'D50', 'D51', 'D52'));
+    T('ペイロードが 3 つとも空欄 → payloadOn false（警告なし）', r.patch.payloadOn === false && !hasW(r, '一部') && !!supK(r, 'payloadOn') && !supK(r, 'payloadPos'));
+  });
+  await tryT('空欄: 慣性・空力', async () => {
+    let r = await imp(ws => del(ws, 'D33'));
+    T('慣性（ピッチ）が空欄 → inertiaMode auto', r.patch.inertiaMode === 'auto' && !!supK(r, 'inertiaMode'));
+    r = await imp(ws => del(ws, 'D34'));
+    T('慣性（ロール）が空欄 → inertiaMode auto', r.patch.inertiaMode === 'auto');
+    r = await imp(ws => del(ws, 'D36'));
+    T('圧力中心が空欄 → aeroMode barrowman', r.patch.aeroMode === 'barrowman' && !('cpManual' in r.patch));
+    r = await imp(ws => del(ws, 'D38'));
+    T('法線力傾斜が空欄 → aeroMode barrowman', r.patch.aeroMode === 'barrowman');
+    r = await imp(ws => del(ws, 'D37'));
+    T('軸力係数が空欄 → cdMode auto', r.patch.cdMode === 'auto' && !('cdManual' in r.patch));
+    r = await imp(ws => del(ws, 'D39', 'D40'));
+    T('Cmq / Clp が空欄 → null', r.patch.cmq === null && r.patch.clp === null && 'cmq' in r.patch && 'clp' in r.patch);
+    r = await imp(ws => del(ws, 'D30'));
+    T('タンク口金が空欄 → hOxDrain false', r.patch.hOxDrain === false && !('hTankOutlet' in r.patch));
+  });
+  await tryT('空欄: 0 にする項目', async () => {
+    const b2 = { ...base, siteAlt: 123, finAft: 7, nozzleExitD: 9, magDecl: -7 };
+    let r = await imp(ws => del(ws, 'D10', 'D42', 'D56'), b2);
+    T('海面高度・ノズル出口直径・フィンオフセットが空欄 → 0', r.patch.siteAlt === 0 && r.patch.nozzleExitD === 0 && r.patch.finAft === 0);
+    r = await imp(ws => del(ws, 'D11'), b2);
+    T('磁気偏角が空欄 → 0 ＋警告', r.patch.magDecl === 0 && hasW(r, '磁気偏角が空欄'));
+  });
+  await tryT('空欄: 作動時間', async () => {
+    const r = await imp(ws => del(ws, 'D62'));
+    const p = pts(r.patch.engText), tOp = 1.2 * 2.393;
+    T('作動時間が空欄 → hOpTime 0、仮定曲線は 1.2·燃焼時間まで', r.patch.hOpTime === 0 && Math.abs(p[p.length - 1][0] - tOp) <= 1e-9 && !!supK(r, 'hOpTime'), p[p.length - 1]);
+    T('同: 総力積 ±0.5%', Math.abs(trapz(p) / I_DEBUG - 1) < 0.005);
+    if (hasPhys) { const M = buildModel(normalizeCfg({ ...base, ...r.patch })); T('同: buildModel の M.tb = 1.2·t_b（±1e-9）', Math.abs(M.tb - tOp) <= 1e-9, M.tb); }
+  });
+  await tryT('空欄: 必須項目', async () => {
+    const b3 = { ...base, d: 99, noseLen: 300, bodyLen: 900, tailLen: 0, lat: 33.3 };
+    let r = await imp(ws => del(ws, 'D20'), b3);
+    T('代表直径が空欄 → 現在値を残して「必須項目が空欄」', !('d' in r.patch) && hasW(r, '必須項目が空欄'));
+    r = await imp(ws => del(ws, 'D21'), b3);
+    T('全長が空欄 → 現在の全長 1200 を保つ（bodyLen 900、後端基準も 1200 で換算）', r.patch.bodyLen === 900 && r.patch.hDryCG === 608.52 && hasW(r, '必須項目が空欄'), `${r.patch.bodyLen} ${r.patch.hDryCG}`);
+    r = await imp(ws => del(ws, 'D8'), b3);
+    T('緯度が空欄 → 0 にせず現在値を残す', !('lat' in r.patch) && hasW(r, '緯度'));
+    r = await imp(ws => del(ws, 'D43'), b3);
+    T('燃焼時間が空欄 → 必須項目の警告', !('hBurnTime' in r.patch) && hasW(r, '必須項目が空欄'));
+  });
+  await tryT('単位・数値', async () => {
+    let r = await imp(ws => { set(ws, 'D21', 1.6); set(ws, 'E21', 'm'); });
+    T('全長 1.6 m → bodyLen 1300、重心も 1600 mm 基準', r.patch.bodyLen === 1300 && r.patch.hDryCG === 1008.52 && !hasW(r, '単位'));
+    r = await imp(ws => { set(ws, 'D23', '６１９０'); set(ws, 'E23', 'g'); });
+    T('全角数字の文字列 ＋ 単位 g → hDryMass 6190 g', r.patch.hDryMass === 6190);
+    r = await imp(ws => { set(ws, 'E33', 'kg·m²'); set(ws, 'E34', 'kgm2'); });
+    T('慣性の単位の表記ゆれ（kg·m² / kgm2）は警告なし', r.patch.Ipitch === 1.5 && r.patch.Iroll === 0.09 && !hasW(r, '単位'));
+    r = await imp(ws => set(ws, 'E20', 'inch'));
+    T('未知の単位 → 警告して既定単位', r.patch.d === 130 && hasW(r, '「inch」'));
+    r = await imp(ws => { set(ws, 'D14', '８５'); set(ws, 'D11', '−7.6'); });
+    T('全角の射角・Unicode マイナスの磁気偏角', r.patch.elev === 85 && r.patch.magDecl === -7.6 && !hasW(r, '西偏'), r.patch.magDecl);
+    r = await imp(ws => set(ws, 'D24', '0.391kg'));
+    T('数値でない値 → 空欄扱い（現在値）＋警告', !('hOxMass' in r.patch) && hasW(r, '数値でない'));
+    r = await imp(ws => { set(ws, 'D28', 0.59148); set(ws, 'E28', 'm'); set(ws, 'D24', 391); set(ws, 'E24', 'g'); });
+    T('重心 0.59148 m、酸化剤 391 g', r.patch.hDryCG === 1008.52 && r.patch.hOxMass === 391);
+    r = await imp(ws => set(ws, 'D54', 'CONE'));
+    T('ノーズ形状は大文字小文字を区別しない', r.patch.noseShape === 'cone');
+    r = await imp(ws => set(ws, 'D17', 0.2));
+    T('べき指数 n < 1 → α とみなして警告', near(r.patch.windExp, 0.2) && hasW(r, 'べき指数'));
+  });
+  await tryT('ラベル探索', async () => {
+    const aoa = ws => { const rg = X.utils.decode_range(ws['!ref']), a = []; for (let r = 0; r <= rg.e.r; r++) { const row = []; for (let c = 0; c <= Math.max(5, rg.e.c); c++) { const x = ws[X.utils.encode_cell({ r, c })]; row.push(x ? x.v : null); } a.push(row); } return a; };
+    let r = await imp((ws, wb) => {
+      const a = aoa(ws), pay = a.splice(48, 4);     // ペイロード（B49〜C52）をリカバリ（1段階目）の前へ
+      a.splice(43, 0, ...pay); a.unshift([], [], []); // 先頭に空行も足す（行番号に依存しない）
+      wb.Sheets[SN] = X.utils.aoa_to_sheet(a);
+    });
+    T('行を並べ替えても列B の見出しで同名ラベルを区別', r.patch.c1Vt === 8.08 && r.patch.payloadVt === 6 && r.patch.rec2 === 'none' && r.patch.payloadMass === 250 && r.patch.hDryCG === 1008.52);
+    r = await imp((ws, wb) => { wb.SheetNames[0] = 'Sheet1'; wb.Sheets.Sheet1 = ws; delete wb.Sheets[SN]; });
+    T('「団体入力シート」が無ければ先頭のシートを使う', r.patch.hDryCG === 1008.52 && r.patch.name === 'Debug');
+    r = await imp(ws => { set(ws, 'C11', '磁気偏角'); set(ws, 'B44', 'リカバリ(１段階目)'); });
+    T('見出しの全角・半角括弧の違いは NFKC で吸収', r.patch.c1Vt === 8.08 && r.patch.rec1 === 'apogee');
+    r = await imp(ws => del(ws, 'C47', 'C48', 'C50', 'C51', 'C52'));
+    T('「降下終端速度」が 1 行（1段目）だけでも 2段目・ペイロードに流用しない', r.patch.c1Vt === 8.08 && r.patch.rec2 === 'none' && !('c2Vt' in r.patch) && r.patch.payloadOn === false && !('payloadVt' in r.patch),
+      JSON.stringify({ c2Vt: r.patch.c2Vt, payloadVt: r.patch.payloadVt, payloadOn: r.patch.payloadOn }));
+    r = await imp(ws => del(ws, 'C45'));
+    T('1段目の行が無い → rec1 none、ペイロードの終端速度は見出しで取る', r.patch.rec1 === 'none' && !('c1Vt' in r.patch) && r.patch.payloadVt === 6 && r.patch.payloadOn === true);
+  });
+  await tryT('その他の上書き', async () => {
+    const r = await SS.importFile(ab, { ...base, aeroTable: '0,0.5\n1,0.6', cdScale: 120 });
+    T('空力テーブルは空にして警告', r.patch.aeroTable === '' && hasW(r, '空力テーブル'));
+    T('抗力係数の倍率 ≠ 100% は警告', hasW(r, '抗力係数の倍率'));
+  });
+  await tryT('推力履歴シート', async () => {
+    const r = await imp((ws, wb) => X.utils.book_append_sheet(wb, X.utils.aoa_to_sheet([['推力履歴は仮定（Isp 170 s）'], ['t[s]', 'F[N]'], [0, 0], [0.1, 300], [2, 250], [2.5, 0]]), '推力履歴'));
+    T('推力履歴シート → engText "t F"、仮定の注意文があれば thrustKind assumed のまま', r.patch.thrustKind === 'assumed' && r.patch.engText === '0 0\n0.1 300\n2 250\n2.5 0' && !supK(r, 'engText'), JSON.stringify(r.patch.engText));
+    const r2 = await imp((ws, wb) => X.utils.book_append_sheet(wb, X.utils.aoa_to_sheet([['t[s]', 'F[N]'], [0, 0], [0.1, 300], [2, 250], [2.5, 0]]), '推力履歴'));
+    T('推力履歴シート（実測）→ thrustKind measured、仮定の警告なし', r2.patch.thrustKind === 'measured' && r2.patch.engText === '0 0\n0.1 300\n2 250\n2.5 0' && !hasW(r2, 'Isp 170') && r2.imported.some(x => x.key === 'engText'));
+  });
+  await tryT('シミュレータ追加諸元', async () => {
+    if (typeof PHYS_DEFAULTS === 'undefined') { T('追加諸元の往復読込', null, 'PHYS_DEFAULTS なし'); return; }
+    const r = await imp((ws, wb) => X.utils.book_append_sheet(wb, X.utils.aoa_to_sheet([
+      ['推力履歴は仮定（Isp 170 s）。審査提出には地上燃焼試験の推力履歴を使用すること'],
+      ['key', '項目名', '値', '単位', '説明'],
+      ['finN', 'フィン枚数', 3, '枚', ''], ['machCorr', '圧縮性補正', 'FALSE', '', ''], ['hOxDrain', '', 'TRUE', '', ''], ['landSurface', '着地面', 'sea', '', ''],
+      ['payloadPos', 'ペイロード重心', '250', 'mm(先端)', ''], ['tailLen', 'ボートテール長', 100, 'mm', ''], ['cmq', 'Cmq', null, '', ''], ['bogusKey', '?', 1, '', ''], ['gust', '', '１.５', 'm/s', ''],
+      ['lugAft', '', '30 mm', 'mm', ''], ['payloadOn', '', 1, '', ''], ['rec2', '', 'altitude', '', ''], ['openTime', '', 'abc', 's', ''],
+    ]), 'シミュレータ追加諸元'));
+    T('追加諸元で上書き（number / boolean / string / null）', r.patch.finN === 3 && r.patch.machCorr === false && r.patch.hOxDrain === true && r.patch.landSurface === 'sea' && r.patch.payloadPos === 250 && r.patch.cmq === null && r.patch.gust === 1.5 && r.patch.payloadOn === true && r.patch.rec2 === 'altitude',
+      JSON.stringify({ finN: r.patch.finN, machCorr: r.patch.machCorr, landSurface: r.patch.landSurface, payloadPos: r.patch.payloadPos, cmq: r.patch.cmq, gust: r.patch.gust }));
+    T('追加諸元の数値は parseFloat（"30 mm" → 30）、数値でなければ警告して無視', r.patch.lugAft === 30 && r.patch.openTime === base.openTime && hasW(r, 'openTime'));
+    T('追加諸元のテール長 → 胴体長 = 全長 − ノーズ − テール', r.patch.tailLen === 100 && r.patch.bodyLen === 1200);
+    T('DEFAULTS に無いキーは無視して警告', !('bogusKey' in r.patch) && hasW(r, 'bogusKey'));
+    T('上書きしたキーは supplemented から imported へ移る', !supK(r, 'finN') && r.imported.some(x => x.key === 'finN' && x.sheetLabel === 'フィン枚数'));
+    T('注意文・見出し行は無視（未知キーの警告を出さない）', !r.warnings.some(w => w.includes('「key」') || w.includes('推力履歴は仮定（Isp 170 s）。審査提出には地上燃焼試験の推力履歴を使用すること」')));
+  });
+  await tryT('失敗時', async () => {
+    const rej = async (p) => { try { await p; return null; } catch (e) { return e; } };
+    let e = await rej(SS.importFile(new TextEncoder().encode('これは xlsx ではない').buffer, base));
+    T('xlsx でないファイル → reject(Error 日本語)', e instanceof Error && jp(e.message), e && e.message);
+    const wb = X.utils.book_new(); X.utils.book_append_sheet(wb, X.utils.aoa_to_sheet([['a', 'b'], [1, 2]]), 'Sheet1');
+    e = await rej(SS.importFile(out(wb), base));
+    T('必須ラベルが無い → reject（「必須項目」）', e instanceof Error && e.message.includes('必須項目'), e && e.message);
+    e = await rej(SS.importFile(null, base));
+    T('ファイル以外 → reject(Error 日本語)', e instanceof Error && jp(e.message), e && e.message);
+    e = await rej(imp(ws => del(ws, 'C60')));
+    T('「半スパン」の行が無い → reject', e instanceof Error && e.message.includes('半スパン'), e && e.message);
+    const ep = SS.exportXlsx({}, null, null); if (ep && ep.catch) ep.catch(() => {});
+    T('exportXlsx は Promise を返す', ep instanceof Promise);
+    await ep.catch(() => {});
+  });
+
+  // ================= S2: spec-dump.txt 照合・§3.3 検算・書出し・往復 =================
+  if (!hasPhys) { T('S2（書出し・往復）', null, 'physics.js の normalizeCfg/buildModel/PHYS_DEFAULTS なし'); finish(); return; }
+  const XMIME = 'application/vnd.openxmlformats-officedocument.spreadsheetml.sheet';
+  const NOTE_TXT = SS.ASSUMED_NOTE || '推力履歴は仮定（Isp 170 s）。審査提出には地上燃焼試験の推力履歴を使用すること';
+  const FMK = new Set(SS.fieldMap.map(f => f.key));
+  const cellv = (ws, a) => { const x = ws && ws[a]; return x && x.t !== 'z' ? x.v : undefined; };
+  const blank = v => v === undefined || v === null || v === '';
+  const sameCell = (a, b, rel = 1e-9) => blank(a) ? blank(b) : typeof a === 'number' ? near(+b, a, rel) : String(a) === String(b);
+  const rowsOf = ws => X.utils.sheet_to_json(ws, { header: 1, defval: null, blankrows: true });
+  const kv = ws => { const m = {}; for (const r of rowsOf(ws)) if (typeof r[0] === 'string' && r[0] && r[0] !== 'key') m[r[0]] = r[2]; return m; };
+  const listBad = (o, f) => Object.keys(o).filter(f);
+  const base0 = normalizeCfg({});
+
+  // ---------- 6. spec-dump.txt と照合（baseCfg = normalizeCfg({})） ----------
+  let dump = null, r0 = null;
+  await tryT('dump 照合', async () => {
+    const txt = await (await fetch('fixtures/spec-dump.txt')).text();
+    // シートごとのセル（値の文字列）: "==== SHEET: 名前 …" の後の行を " | " で区切る
+    dump = {};
+    for (const part of txt.split('==== SHEET: ').slice(1)) {
+      const name = part.split(/\s/)[0], cells = {};
+      for (const line of part.split(/\r?\n/).slice(1)) for (const seg of line.split(' | ')) {
+        const m = /^([A-Z]+\d+)='(.*?)'(?: \[=.*\])?$/.exec(seg.trim()); if (m) cells[m[1]] = m[2];
+      }
+      dump[name] = cells;
+    }
+    const D = dump['団体入力シート'];
+    T('spec-dump.txt を読めた（団体入力シート・審査用シート・分野別確認シート）', !!D && !!dump['審査用シート'] && !!dump['分野別確認シート'] && D.D21 === '1600');
+    // 列B の見出しを引き継ぎながら、列C のラベルごとに D/E を集める
+    const rows = []; let sec = '';
+    for (let r = 1; r <= 70; r++) { if (D['B' + r]) sec = D['B' + r]; if (D['C' + r]) rows.push({ r, sec, label: D['C' + r], v: D['D' + r], u: D['E' + r] }); }
+    const L = +D.D21, nose = +D.D55;
+    r0 = await SS.importFile(ab, base0);
+    const exp = {}, bad = [], badSheet = [];
+    for (const f of SS.fieldMap) {
+      if (f.key === 'name') { exp.name = D.D6; continue; }
+      const cands = rows.filter(x => x.label === f.subItem), row = cands.length > 1 ? cands.find(x => x.sec === f.item) : cands[0];
+      if (!row) { bad.push(`${f.subItem}: dump に行なし`); continue; }
+      if (row.v === undefined || row.v === '') { exp[f.key] = undefined; continue; }
+      const x = +row.v;
+      exp[f.key] = f.key === 'bodyLen' ? L - nose : f.key === 'noseShape' ? row.v.toLowerCase() : f.conv === 'aft' ? L - x : f.conv === 'kg' ? x * 1000 : f.conv === 'invN' ? 1 / x : x;
+      const im = r0.imported.find(y => y.key === f.key);
+      const su = blank(row.u) ? f.unit : row.u;
+      if (!im || !(typeof im.sheetValue === 'number' ? near(im.sheetValue, x, 1e-12) : im.sheetValue === row.v) || im.sheetUnit !== su) badSheet.push(`${f.key}: ${JSON.stringify(im && [im.sheetValue, im.sheetUnit])}（期待 ${row.v} ${su}）`);
+    }
+    for (const [k, v] of Object.entries(exp)) {
+      if (v === undefined) { if (k in r0.patch) bad.push(`${k}=${r0.patch[k]}（期待: 空欄のため patch に入れない）`); }
+      else if (!(typeof v === 'number' ? near(r0.patch[k], v, 1e-9) : r0.patch[k] === v)) bad.push(`${k}=${r0.patch[k]}（期待 ${v}）`);
+    }
+    T(`読み込んだ全項目が spec-dump.txt の値（換算後）と一致（${Object.keys(exp).length} 項目）`, !bad.length, bad.join(', '));
+    T('imported の sheetValue / sheetUnit が spec-dump.txt の D / E 列と一致', !badSheet.length, badSheet.join(', '));
+    T('2段目（dump で空欄）は rec2 none、ペイロード 3 項目そろい → payloadOn', r0.patch.rec2 === 'none' && r0.patch.payloadOn === true && r0.patch.rec1 === 'apogee');
+  });
+
+  // ---------- 7. §3.3 検算（reviewValues(buildModel(normalizeCfg({...PHYS_DEFAULTS, ...patch})))） ----------
+  let MI = null;
+  await tryT('§3.3 検算', async () => {
+    if (!r0) throw new Error('読込結果なし');
+    MI = buildModel(normalizeCfg({ ...PHYS_DEFAULTS, ...r0.patch }));
+    if (typeof reviewValues !== 'function') { T('§3.3 検算', null, 'reviewValues なし'); return; }
+    const rv = reviewValues(MI);
+    const CHECK = { massWet_kg: 6.581, massBurnout_kg: 6.132, cgWet_aft_mm: 578.678, cgBurnout_aft_mm: 596.030, cgDry_aft_mm: 591.48, fstWet_pct: 14.792, fstDry_pct: 15.593,
+      cdS1_m2: 1.53567, cdSPayload_m2: 0.113542, oxFlow_kgps: 0.163393, fuelFlow_kgps: 0.0242374, propFlow_kgps: 0.187631, IpitchWet: 1.51708, IpitchBurnout: 1.48645, smWet_cal: 1.8206 };
+    for (const [k, v] of Object.entries(CHECK)) T(`§3.3 ${k} = ${v}（相対 1e-4）`, Math.abs(rv[k] / v - 1) <= 1e-4, rv[k]);
+    const ap = MI.massAt(Math.max(10, MI.tEnd), true);
+    T('§3.3 放出後 m = 5.882 kg、cg = 1038.14 mm（先端）、I = 1.31799（相対 1e-4）', Math.abs(ap.m / 5.882 - 1) <= 1e-4 && Math.abs(ap.cg * 1000 / 1038.14 - 1) <= 1e-4 && Math.abs(ap.I / 1.31799 - 1) <= 1e-4, `${ap.m} ${ap.cg * 1000} ${ap.I}`);
+    // 諸元表（審査用シート・分野別確認シート）の数式の計算結果とも一致すること
+    const S2 = dump['審査用シート'], S3 = dump['分野別確認シート'];
+    const SHEETV = { massWet_kg: S2.F18, massBurnout_kg: S2.F19, cgWet_aft_mm: S2.F24, cgBurnout_aft_mm: S2.F28, cgDry_aft_mm: S2.F20, fstWet_pct: S3.C29, fstDry_pct: S3.C30,
+      cdS1_m2: S3.C35, cdSPayload_m2: S3.C37, oxFlow_kgps: S2.F41, fuelFlow_kgps: S2.F42, propFlow_kgps: S2.F43, L_mm: S2.F13, d_mm: S2.F12, cp_aft_mm: S2.F33, cna: S2.F36, cd0: S2.F35 };
+    const bad = listBad(SHEETV, k => !near(rv[k], +SHEETV[k], 1e-6));
+    T('reviewValues が諸元表の数式の結果（spec-dump.txt）と相対 1e-6 で一致', !bad.length, bad.map(k => `${k}=${rv[k]}（シート ${SHEETV[k]}）`).join(', '));
+    T('2段目なし → cdS2 / vt2 は null', rv.cdS2_m2 === null && rv.vt2_mps === null);
+  });
+
+  // ---------- 8. 仮定曲線（読込結果） ----------
+  await tryT('仮定曲線（読込）', async () => {
+    if (!MI) throw new Error('モデルなし');
+    T('読込結果: thrustKind assumed', r0.patch.thrustKind === 'assumed');
+    T('読込結果: M.tb = t_op = 3.756（±1e-9）', Math.abs(MI.tb - r0.patch.hOpTime) <= 1e-9 && Math.abs(MI.tb - 3.756) <= 1e-9, MI.tb);
+    T('読込結果: M.Itot = 748.5 N·s（±0.5%）', Math.abs(MI.Itot / I_DEBUG - 1) < 0.005, MI.Itot);
+  });
+
+  // ---------- 9. DEBUG_PRESET と読込結果の比較（baseCfg = normalizeCfg({})） ----------
+  await tryT('DEBUG_PRESET 比較', async () => {
+    // 諸元表に無く baseCfg から補う項目（§4.1 supplemented）。それ以外は諸元表＋規則だけで決まる
+    const FROM_BASE = ['finN', 'finThick', 'finCant', 'openTime', 'windDirRef', 'wind', 'windFrom', 'gust', 'temp', 'lugAft', 'landSurface', 'mLen', 'mDia', 'mOver', 'payloadPos'];
+    const bad = Object.keys(P).filter(k => !FROM_BASE.includes(k) && !eqv(r0.patch[k], P[k])).map(k => `${k}=${JSON.stringify(r0.patch[k])?.slice(0, 30)}（期待 ${JSON.stringify(P[k]).slice(0, 30)}）`);
+    T('DEBUG_PRESET の諸元表由来の値が読込結果と一致（engText 含む）', !bad.length, bad.join(', '));
+    const bb = FROM_BASE.filter(k => r0.patch[k] !== base0[k]);
+    T('補完項目は baseCfg の値（normalizeCfg({})）', !bb.length, bb.join());
+    const diff = FROM_BASE.filter(k => P[k] !== base0[k]).map(k => `${k}: DEBUG ${P[k]} / 既定 ${base0[k]}`);
+    T('（参考）DEBUG_PRESET と既定値が異なる補完項目', true, diff.join(', '));
+  });
+
+  // ---------- 10. 書出し（Debug）: 5 シート・様式・値 ----------
+  const cfg1 = normalizeCfg({ ...PHYS_DEFAULTS, ...P }), M1 = buildModel(cfg1);
+  let sim1 = null;
+  try { if (typeof simulate === 'function') sim1 = simulate(M1); } catch (e) { T('simulate(Debug)', false, '例外: ' + e.message); }
+  let buf1 = null, wb1 = null;
+  await tryT('書出し（Debug）', async () => {
+    buf1 = await SS._buildWorkbook(cfg1, M1, sim1);
+    T('_buildWorkbook → ArrayBuffer', buf1 instanceof ArrayBuffer && buf1.byteLength > 1000, buf1 && buf1.byteLength);
+    wb1 = X.read(new Uint8Array(buf1), { type: 'array' });
+    const names = ['団体入力シート', 'シミュレータ追加諸元', '推力履歴', '審査用計算値', '飛行結果'];
+    T('5 シート（団体入力シート・シミュレータ追加諸元・推力履歴・審査用計算値・飛行結果）', wb1.SheetNames.join() === names.join(), wb1.SheetNames.join());
+    T('thrustKind assumed → 全シートの 1 行目（A1）に §2.7 の注意文', names.every(n => cellv(wb1.Sheets[n], 'A1') === NOTE_TXT), names.map(n => cellv(wb1.Sheets[n], 'A1')).join(' / ').slice(0, 120));
+    // 団体入力シート: 元の様式（fixture）と行・列・文言・値が一致すること
+    const wsF = X.read(new Uint8Array(ab), { type: 'array' }).Sheets['団体入力シート'], wsE = wb1.Sheets['団体入力シート'];
+    const bad = [];
+    for (let r = 2; r <= 62; r++) for (const c of 'BCDEF') {
+      const a = c + r;
+      if (a === 'C2' || a === 'E18') continue;   // 更新日 / 基準高さの単位（元の様式は空欄、書出しは m）
+      if (!sameCell(cellv(wsF, a), cellv(wsE, a))) bad.push(`${a}: ${JSON.stringify(cellv(wsE, a))}（元 ${JSON.stringify(cellv(wsF, a))}）`);
+    }
+    T('団体入力シート: 行 2〜62 の見出し・ラベル・値・単位・Note が元の諸元表と一致', !bad.length, bad.slice(0, 8).join(', '));
+    T('団体入力シート: 更新日は日付（シリアル値）、基準高さの単位は m', typeof cellv(wsE, 'C2') === 'number' && cellv(wsE, 'C2') > 45000 && cellv(wsE, 'E18') === 'm');
+    T('団体入力シート: 改訂履歴の見出し（B64・B65〜F65）', ['B64', 'B65', 'C65', 'D65', 'F65'].every(a => sameCell(cellv(wsF, a), cellv(wsE, a))));
+    const mg = s => (s['!merges'] || []).map(m => X.utils.encode_range(m)).sort().join();
+    T('団体入力シート: セル結合（見出し行）が元の様式と同じ', mg(wsF) === mg(wsE), mg(wsE));
+    // 推力履歴 = M.pts
+    const th = rowsOf(wb1.Sheets['推力履歴']).filter(r => typeof r[0] === 'number');
+    T('推力履歴: t[s], F[N] が M.pts と完全一致', th.length === M1.pts.length && th.every((r, i) => r[0] === M1.pts[i][0] && r[1] === M1.pts[i][1]), `${th.length} / ${M1.pts.length}`);
+    T('推力履歴: 見出し t[s], F[N]', JSON.stringify(rowsOf(wb1.Sheets['推力履歴'])[1].slice(0, 2)) === '["t[s]","F[N]"]');
+    // 審査用計算値 = reviewValues（REVIEW_LABELS の順、null は空セル）
+    if (typeof reviewValues === 'function' && typeof REVIEW_LABELS !== 'undefined') {
+      const rv = reviewValues(M1), rr = rowsOf(wb1.Sheets['審査用計算値']).filter(r => REVIEW_LABELS.some(l => l[0] === r[0]));
+      const order = rr.map(r => r[0]).join() === REVIEW_LABELS.map(l => l[0]).join();
+      const vb = rr.filter(r => !(rv[r[0]] === null ? blank(r[2]) : typeof rv[r[0]] === 'number' ? near(r[2], rv[r[0]], 1e-12) : r[2] === rv[r[0]])).map(r => `${r[0]}=${r[2]}（${rv[r[0]]}）`);
+      T('審査用計算値: REVIEW_LABELS の順に reviewValues（null は空セル、項目名・単位も）', order && !vb.length && rr.every((r, i) => r[1] === REVIEW_LABELS[i][1] && r[3] === REVIEW_LABELS[i][2]), vb.join(', '));
+      T('審査用計算値: declCheck の警告も載る', rowsOf(wb1.Sheets['審査用計算値']).some(r => r[0] === 'warn' && String(r[2]).includes('西偏')));
+    } else T('審査用計算値', null, 'reviewValues なし');
+    // シミュレータ追加諸元: DEFAULTS のうち fieldMap に無いキー全部
+    const ex = rowsOf(wb1.Sheets['シミュレータ追加諸元']), exKeys = ex.filter(r => typeof r[0] === 'string' && /^[A-Za-z_]\w*$/.test(r[0]) && r[0] !== 'key').map(r => r[0]);
+    const want = Object.keys(PHYS_DEFAULTS).filter(k => !FMK.has(k));
+    T(`シミュレータ追加諸元: fieldMap に無い全キー（${want.length} 個）`, exKeys.join() === want.join(), want.filter(k => !exKeys.includes(k)).join() + ' / ' + exKeys.filter(k => !want.includes(k)).join());
+    T('シミュレータ追加諸元: 見出し key, 項目名, 値, 単位, 説明', JSON.stringify(ex[1]) === JSON.stringify(['key', '項目名', '値', '単位', '説明']));
+    const pos = ex.filter(r => ['airCG', 'ballastPos', 'payloadPos'].includes(r[0]));
+    T('シミュレータ追加諸元: 位置は先端基準の mm で単位「mm(先端)」', pos.length === 3 && pos.every(r => r[3] === 'mm(先端)' && r[2] === cfg1[r[0]]), JSON.stringify(pos));
+    const xm = kv(wb1.Sheets['シミュレータ追加諸元']);
+    const xb = want.filter(k => k !== 'engText' && !(typeof cfg1[k] === 'number' ? xm[k] === cfg1[k] : cfg1[k] === null ? blank(xm[k]) : typeof cfg1[k] === 'boolean' ? xm[k] === cfg1[k] : String(xm[k] ?? '') === cfg1[k]));
+    T('シミュレータ追加諸元: 値は cfg のまま（engText は空欄で推力履歴シートを参照）', !xb.length && blank(xm.engText), xb.map(k => `${k}=${xm[k]}（${cfg1[k]}）`).join(', '));
+    // 飛行結果
+    const fr = kv(wb1.Sheets['飛行結果']);
+    if (typeof flightSummary === 'function' && sim1) {
+      const fs = flightSummary(M1, sim1);
+      const fb = Object.keys(fs).filter(k => !(typeof fs[k] === 'number' ? (isFinite(fs[k]) ? near(fr[k], fs[k], 1e-12) : blank(fr[k])) : (fs[k] == null ? blank(fr[k]) : fr[k] === fs[k])));
+      T('飛行結果: flightSummary の全項目（NaN は空セル）', !fb.length, fb.map(k => `${k}=${fr[k]}（${fs[k]}）`).join(', '));
+    } else T('飛行結果: flightSummary の全項目', null, 'flightSummary なし（physics P2 待ち）');
+    if (sim1 && sim1.ev && sim1.ev.landing && typeof enuToLatLon === 'function') {
+      const [la, lo] = enuToLatLon(cfg1.lat, cfg1.lon, sim1.ev.landing.x, sim1.ev.landing.y);
+      T('飛行結果: 着地点の緯度経度（enuToLatLon）', near(fr.landing_lat, la, 1e-12) && near(fr.landing_lon, lo, 1e-12), `${fr.landing_lat}, ${fr.landing_lon}`);
+    } else T('飛行結果: 着地点の緯度経度', null, 'simulate / ev.landing なし');
+    T('飛行結果: 頂点高度がある', typeof fr.apogee_m === 'number' && fr.apogee_m > 100, fr.apogee_m);
+  });
+
+  // ---------- 11. 往復: Debug を書き出して読み込み直す（engText 以外の数値キーが相対 1e-6） ----------
+  const roundTrip = async (c, b = base0) => {
+    const M = buildModel(c), s = typeof simulate === 'function' ? simulate(M) : null;
+    const buf = await SS._buildWorkbook(c, M, s), r = await SS.importFile(buf, b);
+    const c2 = normalizeCfg({ ...b, ...r.patch });
+    const numBad = Object.keys(c).filter(k => k !== 'engText' && typeof c[k] === 'number' && !near(c2[k], c[k], 1e-6)).map(k => `${k}=${c2[k]}（元 ${c[k]}）`);
+    const othBad = Object.keys(c).filter(k => k !== 'engText' && typeof c[k] !== 'number' && c2[k] !== c[k]).map(k => `${k}=${JSON.stringify(c2[k])}（元 ${JSON.stringify(c[k])}）`);
+    return { M, s, r, c2, M2: buildModel(c2), numBad, othBad };
+  };
+  await tryT('往復（Debug）', async () => {
+    const t = await roundTrip(cfg1);
+    T('往復: engText 以外の数値キーが相対 1e-6 で一致', !t.numBad.length, t.numBad.join(', '));
+    T('往復: 文字列・真偽値・null のキーも一致', !t.othBad.length, t.othBad.join(', '));
+    T('往復: 推力曲線（M.pts）が完全一致、thrustKind assumed のまま', t.M2.pts.length === t.M.pts.length && t.M2.pts.every((p, i) => p[0] === t.M.pts[i][0] && p[1] === t.M.pts[i][1]) && t.c2.thrustKind === 'assumed' && t.M2.tb === t.M.tb);
+    T('往復: 未知キー・単位不明の警告が出ない', !t.r.warnings.some(w => w.includes('未知のキー') || w.includes('単位「')), t.r.warnings.join(' / '));
+    if (typeof reviewValues === 'function') {
+      const a = reviewValues(t.M), b = reviewValues(t.M2), bad = Object.keys(a).filter(k => typeof a[k] === 'number' ? !near(b[k], a[k], 1e-6) : a[k] !== b[k]);
+      T('往復: reviewValues が相対 1e-6 で一致', !bad.length, bad.join());
+    }
+  });
+
+  // ---------- 12. 書出しの規則（§4.2） ----------
+  const exp1 = async (patch, from = { ...PHYS_DEFAULTS, ...P }) => {
+    const c = normalizeCfg({ ...from, ...patch }), M = buildModel(c), s = typeof simulate === 'function' ? simulate(M) : null;
+    const wb = X.read(new Uint8Array(await SS._buildWorkbook(c, M, s)), { type: 'array' });
+    return { c, M, s, wb, ws: wb.Sheets['団体入力シート'], rv: typeof reviewValues === 'function' ? reviewValues(M) : {} };
+  };
+  await tryT('書出し: 方位・テール（往復）', async () => {
+    const c = normalizeCfg({ ...PHYS_DEFAULTS, ...P, azimRef: 'true', azim: 30, magDecl: -7, tailLen: 100, tailD: 110 });
+    const e = await exp1({}, c);
+    T('打上方位角 = (真方位 − 磁気偏角) mod 360（真北 30°、偏角 −7° → 37）', near(cellv(e.ws, 'D13'), 37, 1e-9), cellv(e.ws, 'D13'));
+    T('全長はボートテールを含む（1700 mm）、重心は 1700 基準の後端から', cellv(e.ws, 'D21') === 1700 && near(cellv(e.ws, 'D28'), 1700 - 1008.52, 1e-9));
+    const t = await roundTrip(c);
+    T('往復（azimRef true・テールあり）: 数値キーが相対 1e-6、azim 30 / azimRef true に戻る', !t.numBad.length && !t.othBad.length && near(t.c2.azim, 30, 1e-9) && t.c2.azimRef === 'true', t.numBad.concat(t.othBad).join(', '));
+    const e2 = await exp1({ azimRef: 'magnetic', azim: 3, magDecl: 7.6 });
+    T('磁北基準はそのまま（mod 360 で負にならない）', near(cellv(e2.ws, 'D13'), 3, 1e-9), cellv(e2.ws, 'D13'));
+  });
+  await tryT('書出し: べき指数', async () => {
+    let e = await exp1({ windExp: 0.14 });
+    T('べき指数 = 1/windExp', near(cellv(e.ws, 'D17'), 1 / 0.14, 1e-12), cellv(e.ws, 'D17'));
+    const n0 = DL.length;
+    const r = await SS.exportXlsx({ ...cfg1, windExp: 0 }, null, null);
+    const wb = X.read(new Uint8Array(DL[DL.length - 1].data), { type: 'array' }), ws = wb.Sheets['団体入力シート'];
+    T('windExp ≤ 0 → べき指数は空欄＋warning', DL.length === n0 + 1 && blank(cellv(ws, 'D17')) && r.warnings.some(w => w.includes('べき指数')) && String(cellv(ws, 'F17')).includes('空欄'), JSON.stringify(r.warnings));
+  });
+  await tryT('書出し: 回収系・ペイロード', async () => {
+    let e = await exp1({ rec2: 'ignition', rec2Time: 20, c2Vt: 4.5 });
+    T('rec2 ignition（velocity）→ 開傘時刻 rec2Time・終端速度 c2Vt', cellv(e.ws, 'D47') === 20 && cellv(e.ws, 'D48') === 4.5 && cellv(e.ws, 'D45') === 8.08);
+    e = await exp1({ chuteSpec: 'diameter', c1D: 900, c1Cd: 0.8, c2D: 1500, c2Cd: 1.5, rec2: 'ignition', rec2Time: 20 });
+    const vt1 = Math.sqrt(2 * e.M.mRef * 9.81 / (1.2 * e.M.c1CdA)), vt2 = Math.sqrt(2 * e.M.mRef * 9.81 / (1.2 * (e.M.c1CdA + e.M.c2CdA)));
+    T('diameter → 1段目 = √(2·m_ref·9.81/(1.2·c1CdA))', near(cellv(e.ws, 'D45'), vt1, 1e-9), `${cellv(e.ws, 'D45')} / ${vt1}`);
+    T('diameter → 2段目 = √(2·m_ref·9.81/(1.2·(c1CdA + c2CdA)))（reviewValues の vt2 と同じ）', near(cellv(e.ws, 'D48'), vt2, 1e-9) && (e.rv.vt2_mps == null || near(cellv(e.ws, 'D48'), e.rv.vt2_mps, 1e-9)), `${cellv(e.ws, 'D48')} / ${vt2}`);
+    e = await exp1({ rec2: 'altitude', mainAlt: 150 });
+    const d2 = e.s && e.s.ev && e.s.ev.deploy2;
+    if (d2) T('rec2 altitude → 開傘時刻 = ノミナル計算の ev.deploy2.t、Note「高度 150 m 開傘の予測時刻」', near(cellv(e.ws, 'D47'), d2.t, 1e-12) && String(cellv(e.ws, 'F47')).includes('高度 150 m 開傘の予測時刻') && cellv(e.ws, 'D48') === 5, `${cellv(e.ws, 'D47')} ${cellv(e.ws, 'F47')}`);
+    else T('rec2 altitude → 開傘時刻 = ev.deploy2.t', null, 'simulate が deploy2 を返さない（physics 側）');
+    const t = await roundTrip(e.c);
+    T('往復（rec2 altitude）: rec2 altitude に戻り、rec2Time 以外の数値キーが一致', t.c2.rec2 === 'altitude' && !t.numBad.filter(s => !s.startsWith('rec2Time=')).length, t.numBad.join(', '));
+    e = await exp1({ rec2: 'none' });
+    T('rec2 none → 開傘時刻・終端速度とも空欄', blank(cellv(e.ws, 'D47')) && blank(cellv(e.ws, 'D48')));
+    e = await exp1({ rec1: 'none', rec2: 'ignition' });
+    T('rec1 none → 1段目・2段目とも空欄', blank(cellv(e.ws, 'D45')) && blank(cellv(e.ws, 'D47')) && blank(cellv(e.ws, 'D48')));
+    e = await exp1({ payloadOn: false });
+    T('payloadOn false → ペイロード 3 セルとも空欄', ['D50', 'D51', 'D52'].every(a => blank(cellv(e.ws, a))));
+  });
+  await tryT('書出し: motor・barrowman', async () => {
+    let e = await exp1({ massMode: 'motor' }, base0);
+    const w = e.M.massAt(0), L = cfgLenMm(e.c);
+    T('motor → 乾燥質量 = 点火時の全質量、乾燥時重心 = 点火時の重心（後端）', near(cellv(e.ws, 'D23'), w.m, 1e-9) && near(cellv(e.ws, 'D28'), L - w.cg * 1000, 1e-9), `${cellv(e.ws, 'D23')} ${cellv(e.ws, 'D28')}`);
+    T('motor → 酸化剤 0、初期酸化剤重心・口金は空欄', cellv(e.ws, 'D24') === 0 && blank(cellv(e.ws, 'D29')) && blank(cellv(e.ws, 'D30')));
+    T('motor → 燃焼前燃料 = 推進剤質量、燃焼後 0、燃料重心 = motorX（後端）', near(cellv(e.ws, 'D25'), e.M.prop, 1e-9) && cellv(e.ws, 'D26') === 0 && near(cellv(e.ws, 'D31'), L - e.M.motorX * 1000, 1e-9));
+    T('motor → 燃焼時間 = 作動時間 = M.tb', near(cellv(e.ws, 'D43'), e.M.tb, 1e-12) && near(cellv(e.ws, 'D62'), e.M.tb, 1e-12));
+    T('既定（barrowman）→ 圧力中心・CNα は cpAt(0)、Cmq/Clp は cmqEq/clpEq、軸力係数は cd0', near(cellv(e.ws, 'D36'), L - e.M.cpAt(0).xcp * 1000, 1e-9) && near(cellv(e.ws, 'D38'), e.M.cpAt(0).cna, 1e-12)
+      && near(cellv(e.ws, 'D40'), e.rv.cmqEq, 1e-12) && near(cellv(e.ws, 'D39'), e.rv.clpEq, 1e-12) && near(cellv(e.ws, 'D37'), e.M.cd0, 1e-12));
+    T('thrustKind measured → 注意文なし（推力履歴の A1 は t[s]）', ['団体入力シート', 'シミュレータ追加諸元', '推力履歴', '審査用計算値', '飛行結果'].every(n => cellv(e.wb.Sheets[n], 'A1') !== NOTE_TXT) && cellv(e.wb.Sheets['推力履歴'], 'A1') === 't[s]');
+    // motor の既定 cfg（パラメトリック推力・自動慣性・直径指定）は、書出し→読込で同じ物理モデルになること
+    for (const [nm, c] of [['既定（motor・param）', base0], ['推力倍率 110%', normalizeCfg({ thrustScale: 110 })], ['Debug を barrowman・auto 慣性', normalizeCfg({ ...PHYS_DEFAULTS, ...P, aeroMode: 'barrowman', inertiaMode: 'auto' })]]) {
+      const t = await roundTrip(c);
+      const a = reviewValues(t.M), b = reviewValues(t.M2), bad = Object.keys(a).filter(k => typeof a[k] === 'number' ? !near(b[k], a[k], 1e-6) : a[k] !== b[k]);
+      const same = t.M2.pts.length === t.M.pts.length && t.M2.pts.every((p, i) => p[0] === t.M.pts[i][0] && Math.abs(p[1] - t.M.pts[i][1]) <= 1e-9 * Math.max(1, t.M.pts[i][1]));
+      let apo = '';
+      if (t.s && typeof simulate === 'function') { const s2 = simulate(t.M2); apo = near(s2.st.apogee, t.s.st.apogee, 1e-6) ? '' : `apogee ${s2.st.apogee} / ${t.s.st.apogee}`; }
+      T(`往復（${nm}）: 推力曲線・reviewValues・頂点高度が一致（同じ物理モデル）`, !bad.length && same && !apo, bad.join() + ' ' + apo);
+    }
+  });
+  await tryT('exportXlsx', async () => {
+    const n0 = DL.length, r = await SS.exportXlsx(cfg1, M1, sim1), d = DL[DL.length - 1];
+    T('exportXlsx → download(「Debug_諸元表.xlsx」, ArrayBuffer, xlsx の MIME)', DL.length === n0 + 1 && d.name === 'Debug_諸元表.xlsx' && d.data instanceof ArrayBuffer && d.type === XMIME && r.fileName === d.name, d && d.name);
+    T('exportXlsx の中身は _buildWorkbook と同じ 5 シート', X.read(new Uint8Array(d.data), { type: 'array' }).SheetNames.length === 5);
+    await SS.exportXlsx({ ...cfg1, name: 'A/B:C*?' }, null, null);
+    T('ファイル名に使えない文字は _ にする', DL[DL.length - 1].name === 'A_B_C___諸元表.xlsx', DL[DL.length - 1].name);
+    const e = await SS.exportXlsx({}, null, null).then(() => null, x => x);
+    T('model / sim が null でも cfg から計算して書き出す', !e && DL[DL.length - 1].name === 'MyRocket_諸元表.xlsx', e && e.message);
+  });
+  finish();
+
+  function finish() {
+    const sum = `PASS ${nP} / FAIL ${nF}` + (nS ? ` (SKIP ${nS})` : '');
+    document.getElementById('result').textContent = sum + '\n' + res.filter(r => r[0] !== 'PASS').map(r => `${r[0]} ${r[1]} ${r[2]}`).join('\n');
+    document.getElementById('rows').innerHTML = res.map((r, i) => `<tr><td>${i + 1}</td><td class="${r[0]}">${r[0]}</td><td>${r[1]}</td><td>${r[2].replace(/&/g, '&amp;').replace(/</g, '&lt;')}</td></tr>`).join('');
+    document.title = sum;
+    console.log('[specsheet-test] ' + sum);
+  }
+})();
+</script>
+</body>
+</html>

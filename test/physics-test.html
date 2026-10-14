@@ -1,0 +1,648 @@
+<!doctype html>
+<html lang="ja">
+<head>
+<meta charset="utf-8">
+<meta name="viewport" content="width=device-width, initial-scale=1">
+<title>physics 自己テスト</title>
+<style>
+  :root { --bg: #fff; --fg: #1a1a1a; --mut: #666; --ok: #11743a; --ng: #b3261e; --sk: #8a6d00; --ln: #ddd; }
+  @media (prefers-color-scheme: dark) { :root { --bg: #16181c; --fg: #e6e6e6; --mut: #9a9a9a; --ok: #5fd28a; --ng: #ff8a80; --sk: #e0c050; --ln: #333; } }
+  body { background: var(--bg); color: var(--fg); font: 14px/1.5 system-ui, sans-serif; margin: 16px; }
+  table { border-collapse: collapse; width: 100%; font-size: 13px; }
+  th, td { border-bottom: 1px solid var(--ln); padding: 3px 6px; text-align: left; vertical-align: top; }
+  td.v { font-family: ui-monospace, monospace; overflow-wrap: anywhere; }
+  .PASS { color: var(--ok); font-weight: 600; } .FAIL { color: var(--ng); font-weight: 600; } .SKIP { color: var(--sk); }
+  h2 { font-size: 15px; margin: 18px 0 4px; }
+  pre#result { font-size: 14px; white-space: pre-wrap; }
+</style>
+</head>
+<body>
+<h1>physics.js 自己テスト</h1>
+<p style="color:var(--mut)">physics.js だけを読み込み、load 時に実行する。先頭の表は spec-v2.md §3.5 の検査項目ごとの集計（検査行が 1 つも無い項目は FAIL）。</p>
+<pre id="result">実行中…</pre>
+<div id="out"></div>
+<script src="../physics.js"></script>
+<script>
+'use strict';
+// ---- テスト枠組み ----
+// 各行は §3.5 の項目タグ（S1〜S13）、§2.5 の Barrowman 検算（B）、その他（X）のどれかに属する
+const ITEMS = [
+  ['S1', '§3.3 の検算値（Debug, ballast 0, inertia manual, 相対 1e-4）'],
+  ['S2', '旧キーの移行（recMode none / delay）と冪等性'],
+  ['S3', 'motor 回帰: simulate(buildModel(normalizeCfg({}))) の頂点 ≈ 1636 m ±3%'],
+  ['S4', 'rotDeriv: 自由ジャイロ RK4 h=0.003・10 s（H 保存 / ω⊥·u / 歳差角速度）'],
+  ['S5', 'barrowman・finCant 1°: 燃焼終了時 |p| ≈ V_a·δ·(R+Ymac)/r_g² ±30%'],
+  ['S6', 'velocity 指定・無風: 展開 5 s 後かつ z < 50 m の |vz| ±1%'],
+  ['S7', 'ペイロード: 着地 / 本体より後でも記録 / opt.ballistic でも放出'],
+  ['S8', 'aeroTable の補間'],
+  ['S9', '圧力推力 ΔF ≈ 2.9 N @1 km'],
+  ['S10', 'declCheck（Debug の +7.6 で警告）'],
+  ['S11', 'lugAft'],
+  ['S12', "landSurface 'sea'"],
+  ['S13', '硬さ: Ipitch 0.0015 の manual でも NaN にならない'],
+  ['B', '§2.5 Barrowman 検算（Debug 形状, barrowman, finN=4）'],
+  ['X', 'その他の確認（§2〜§3.4 の契約）'],
+];
+const T = { rows: [], group: '', tag: 'X' };
+function grp(name, tag = 'X') { T.group = name; T.tag = tag; }
+function sec(tag) { T.tag = tag; }
+function add(name, st, val, exp) { T.rows.push({ g: T.group, tag: T.tag, name, st, val, exp }); }
+function ok(name, cond, val = '', exp = '') { add(name, cond ? 'PASS' : 'FAIL', val, exp); }
+const fmtv = v => (typeof v === 'number' ? (Number.isFinite(v) ? +v.toPrecision(8) : String(v)) : JSON.stringify(v));
+// 相対誤差 rel または絶対誤差 abs で一致
+function near(name, val, exp, { rel, abs } = { rel: 1e-4 }) {
+  const e = abs != null ? abs : Math.abs(exp) * rel;
+  ok(name, Number.isFinite(val) && Math.abs(val - exp) <= e, fmtv(val), `${fmtv(exp)} ± ${+e.toPrecision(3)}`);
+}
+function run(name, fn) { const tg = T.tag; try { fn(); } catch (e) { add(name, 'FAIL', String(e && e.stack || e), '例外'); } T.tag = tg; }
+const nearRec = (rec, t) => rec.reduce((a, r) => (Math.abs(r.t - t) < Math.abs(a.t - t) ? r : a));
+
+// 仮定推力曲線（spec §4.1 と同じ作り方。Debug cfg を作るためのテスト専用の写し。§4.1 自体の検査は specsheet 側）
+function assumedEng(c) {
+  const I = (c.hOxMass + c.hFuelPre - c.hFuelPost) / 1000 * 170 * G0;
+  const tb = c.hBurnTime, top = c.hOpTime > 0 ? c.hOpTime : 1.2 * tb;
+  const k = 4 / (top - tb), E = Math.exp(-k * (top - tb)), Fb = 1.25 - 0.6;
+  const xs = [0, 0.01, 0.02, 0.03, 0.04]; for (let x = 0.065; x < 1; x += 0.025) xs.push(x); xs.push(1);
+  const pts = xs.map(x => [x * tb, (1.25 - 0.6 * x) * Math.min(1, x / 0.04)]);
+  for (let i = 1; i <= 40; i++) { const t = tb + (top - tb) * i / 40; pts.push([t, i === 40 ? 0 : Fb * (Math.exp(-k * (t - tb)) - E) / (1 - E)]); }
+  let s = 0; for (let i = 1; i < pts.length; i++) s += (pts[i][1] + pts[i - 1][1]) / 2 * (pts[i][0] - pts[i - 1][0]);
+  return pts.map(p => `${p[0].toFixed(6)} ${(p[1] * I / s).toFixed(5)}`).join('\n');
+}
+
+function main() {
+  if (typeof buildModel !== 'function' || typeof simulate !== 'function') { grp('読込'); add('../physics.js を読み込めた', 'FAIL', typeof buildModel, 'function'); return; }
+
+// Debug 諸元表（test/fixtures/spec-dump.txt）を §4.1 の規則で cfg にしたもの（テスト専用の写し）
+const L_DBG = 1600;
+const DEBUG = {
+  name: 'Debug', lat: 35.177228, lon: 140.357056, siteAlt: 0, magDecl: 7.6, azim: 180, azimRef: 'magnetic', elev: 85, railLen: 5,
+  windExp: 1 / 6, windRef: 4, windDirRef: 'true', wind: 4, windFrom: 270, gust: 0, lugAft: 0, landSurface: 'site',
+  d: 130, noseLen: 300, bodyLen: 1300, tailLen: 0, noseShape: 'ogive',
+  massMode: 'hybrid', hDryMass: 6190, hOxMass: 391, hFuelPre: 380, hFuelPost: 322,
+  hDryCG: L_DBG - 591.48, hOxCG: L_DBG - 376, hTankOutlet: L_DBG - 220.86, hFuelCG: L_DBG - 110.43, hOxDrain: true,
+  inertiaMode: 'manual', Ipitch: 1.5, Iroll: 0.09,
+  aeroMode: 'manual', cpManual: L_DBG - 342, cdManual: 0.37, cnaManual: 11.8, clp: -0.14, cmq: -2.96,
+  nozzleExitD: 18, hBurnTime: 2.393, hOpTime: 3.756,
+  rec1: 'apogee', rec2: 'none', chuteSpec: 'velocity', c1Vt: 8.08, openTime: 1,
+  payloadOn: true, payloadTime: 7, payloadVt: 6, payloadMass: 250, payloadPos: 200,
+  finAft: 0, finCr: 210, finCt: 50, finSweep: 160, finSpan: 143.64, finN: 4, finThick: 3, finCant: 0,
+  motorSrc: 'eng', motorPreset: 'custom', thrustKind: 'assumed', mLen: 600, mDia: 60, mOver: 0, ballast: 0, posRef: 'aft',
+};
+DEBUG.engText = assumedEng(DEBUG);
+const dbg = patch => buildModel({ ...DEBUG, ...patch });
+
+// ================= モデル層 =================
+grp('§3.3 検算値（Debug, manual）', 'S1');
+run('reviewValues', () => {
+  const M = dbg(), rv = reviewValues(M);
+  const exp = {
+    massWet_kg: 6.581, massBurnout_kg: 6.132, cgWet_aft_mm: 578.678, cgBurnout_aft_mm: 596.030, cgDry_aft_mm: 591.48,
+    fstWet_pct: 14.792, fstDry_pct: 15.593, cdS1_m2: 1.53567, cdSPayload_m2: 0.113542, oxFlow_kgps: 0.163393,
+    fuelFlow_kgps: 0.0242374, propFlow_kgps: 0.187631, IpitchWet: 1.51708, IpitchBurnout: 1.48645, smWet_cal: 1.8206,
+  };
+  for (const k in exp) near(k, rv[k], exp[k]);
+  const a = M.massAt(Math.max(M.c.payloadTime, M.tEnd) + 0.1, true);
+  near('放出後 m', a.m, 5.882); near('放出後 cg（先端 mm）', a.cg * 1000, 1038.14); near('放出後 I', a.I, 1.31799);
+  near('放出後 massAt は payloadTime 以降どこでも同じ（t = payloadTime）', M.massAt(M.c.payloadTime, true).m, 5.882);
+  sec('X');
+  near('trueAzim_deg（180 + 7.6）', rv.trueAzim_deg, 187.6, { abs: 1e-9 });
+  near('vt1 = c1Vt', rv.vt1_mps, 8.08, { rel: 1e-9 }); near('vtPayload = payloadVt', rv.vtPayload_mps, 6, { rel: 1e-9 });
+  ok('rec2 none → cdS2/vt2 は null', rv.cdS2_m2 === null && rv.vt2_mps === null);
+  near('cp_aft_mm（manual）', rv.cp_aft_mm, 342, { abs: 1e-9 }); near('cna（manual）', rv.cna, 11.8, { abs: 1e-12 }); near('cd0（manual）', rv.cd0, 0.37, { abs: 1e-12 });
+  near('cmqEq（manual 数値）', rv.cmqEq, -2.96, { abs: 1e-12 }); near('clpEq（manual 数値）', rv.clpEq, -0.14, { abs: 1e-12 });
+  near('opTime_s = hOpTime', rv.opTime_s, 3.756, { abs: 1e-12 }); near('M.tb = 作動時間', M.tb, 3.756, { abs: 1e-9 });
+  near('総力積（曲線の積分）', rv.totalImpulse_Ns, 748.5, { rel: 5e-3 }); near('ispEff_s = Itot/(推進剤·G0)', rv.ispEff_s, 170, { rel: 5e-3 });
+  ok('REVIEW_LABELS が reviewValues の全キーを持つ', REVIEW_LABELS.length === Object.keys(rv).length && REVIEW_LABELS.every(r => r[0] in rv), REVIEW_LABELS.length, Object.keys(rv).length);
+  ok('M.tEnd = max(tb, tIgn + hBurnTime)', Math.abs(M.tEnd - Math.max(M.tb, M.tIgn + 2.393)) < 1e-12, fmtv(M.tEnd));
+  ok('tIgn は 0.05·Fmax 到達時刻', Math.abs(M.thrust(M.tIgn) - 0.05 * M.Fmax) < 1e-6 * M.Fmax, fmtv(M.tIgn));
+  const mE = M.massAt(M.tEnd), mL = M.massAt(M.tEnd + 50);
+  ok('massAt は t ≥ tEnd で一定', mE.m === mL.m && mE.cg === mL.cg && mE.I === mL.I);
+  ok('released=false は payload を含む', Math.abs(M.massAt(10).m - 6.132) < 1e-12 && Math.abs(M.massAt(10, true).m - 5.882) < 1e-12);
+  near('IrollWet（manual = Iroll）', rv.IrollWet, 0.09, { abs: 1e-12 });
+  near('c1Dia（velocity 等価直径）', M.c1Dia, 2 * Math.sqrt(1.53567 / (Math.PI * 0.8)), { rel: 1e-4 });
+  ok('M.warn は配列', Array.isArray(M.warn), JSON.stringify(M.warn));
+});
+run('hybrid 時間変化', () => {
+  sec('X');
+  const M = dbg(), t = M.tIgn + 2.393 / 2, s = M.massAt(t);
+  near('燃焼中央の質量', s.m, (6190 + 391 / 2 - 58 / 2) / 1000, { rel: 1e-12 });
+  const xox = 1.37914 + 0.5 * (1.224 - 1.37914);
+  near('燃焼中央の重心（口金へ移動）', s.cg, (6.19 * 1.00852 + 0.1955 * xox - 0.029 * 1.48957) / s.m, { rel: 1e-12 });
+  const M2 = dbg({ hOxDrain: false }), s2 = M2.massAt(t);
+  near('hOxDrain=false の重心', s2.cg, (6.19 * 1.00852 + 0.1955 * 1.224 - 0.029 * 1.48957) / s2.m, { rel: 1e-12 });
+});
+
+grp('§3.1 M のフィールド / motor モードの reviewValues');
+run('M fields', () => {
+  const keys = 'c warn name L d R A Ln Lb Lt dBase Xb Cr Ct s Xs N mLen mDia motorX mName cd0 cdEst pts Itot tb tIgn burnTime tEnd trueAzim azim elev railLen wdir windRef openTime lat lon massMode massAt cpAt cdAt thrust c1CdA c2CdA payloadCdA c1Dia c2Dia payloadDia'.split(' ');
+  for (const M of [dbg(), buildModel({})]) {
+    const miss = keys.filter(k => !(k in M) || M[k] === undefined);
+    ok(`M に §3.1 の全フィールド（${M.massMode}）`, miss.length === 0, miss.join(','));
+    const ms = M.massAt(0.5);
+    ok(`massAt → {m, cg, I, Ir} が有限（${M.massMode}）`, ['m', 'cg', 'I', 'Ir'].every(k => Number.isFinite(ms[k])));
+  }
+  const M = buildModel({}), rv = reviewValues(M);
+  ok('motor: ox/fuel 流量は null', rv.oxFlow_kgps === null && rv.fuelFlow_kgps === null);
+  ok('motor: payloadOn=false → ペイロード関連は null', ['cgAfterPayload_aft_mm', 'fstAfterPayload_pct', 'smAfterPayload_cal', 'cdSPayload_m2', 'vtPayload_mps'].every(k => rv[k] === null));
+  near('motor: massDry = 点火時の全質量', rv.massDry_kg, M.massAt(0).m, { abs: 0 });
+  near('motor: burnTime = tb', rv.burnTime_s, M.tb, { abs: 0 }); near('motor: tEnd = tb', M.tEnd, M.tb, { abs: 0 });
+  near('motor: cmqEq は燃焼終了時重心で', rv.cmqEq, M.cmqEq(M.massAt(M.tb).cg), { abs: 0 });
+  near('diameter: cdS2 = c1CdA + c2CdA', rv.cdS2_m2, M.c1CdA + M.c2CdA, { rel: 1e-12 });
+  near('diameter: c1CdA = Cd·π(D/2)²', M.c1CdA, 0.8 * Math.PI * 0.225 ** 2, { rel: 1e-12 }); near('diameter: c1Dia = c1D', M.c1Dia, 0.45, { abs: 0 });
+  ok('diameter: vt2 は有限', Number.isFinite(rv.vt2_mps), fmtv(rv.vt2_mps));
+  ok("rec1 'none' → cdS1/vt1 も null", (r => r.cdS1_m2 === null && r.vt1_mps === null && r.cdS2_m2 === null)(reviewValues(buildModel({ rec1: 'none' }))));
+  ok('全値が有限数・文字列・null のいずれか', Object.values(reviewValues(dbg())).every(v => v === null || typeof v === 'string' || Number.isFinite(v)));
+  const Mv = dbg({ rec2: 'ignition', rec2Time: 20, c2Vt: 5 }), rv2 = reviewValues(Mv);
+  near('velocity: cdS2 = c2CdA', rv2.cdS2_m2, 2 * 6.132 * 9.81 / (1.2 * 25), { rel: 1e-9 }); near('velocity: vt2 = c2Vt', rv2.vt2_mps, 5, { rel: 1e-9 });
+});
+
+grp('§2.5 Barrowman 検算（Debug 形状, barrowman, finN=4）', 'B');
+run('barrowman', () => {
+  const M = dbg({ aeroMode: 'barrowman' }), cp = M.cpAt(0);
+  near('CNα', cp.cna, 11.807, { abs: 0.01 });
+  near('xcp（後端から mm）≈ 338.5', 1600 - cp.xcp * 1000, 338.5, { abs: 0.5 });
+  ok('xcp とシートの 342 mm の差は許容範囲（≤ 5 mm）', Math.abs(1600 - cp.xcp * 1000 - 342) <= 5, fmtv(1600 - cp.xcp * 1000));
+  near('cmqEq（乾燥重心）', M.cmqEq(1.00852), -2.957, { abs: 0.01 });
+  near('reviewValues.cmqEq', reviewValues(M).cmqEq, -2.957, { abs: 0.01 });
+  near('CNα_F', cp.cnaF, 9.807, { abs: 0.002 });
+  near('R + Ymac', M.Rcant, 0.12209, { abs: 1e-5 });
+  near('r_g²', M.rg2, 0.016408, { abs: 2e-6 });
+  near('clpEq', M.clpEq(0), -0.251, { abs: 0.001 });
+  near('reviewValues.clpEq', reviewValues(M).clpEq, -0.251, { abs: 0.001 });
+  const Mm = dbg({ cmq: null, clp: '' });
+  near('manual + cmq null → cmqAt は barrowman 由来', Mm.cmqAt(0, 1.00852), -2.957, { abs: 0.01 });
+  near('manual + clp 空 → clpAt は clpEq', Mm.clpAt(0.5), -0.251, { abs: 0.001 });
+  const Mc = dbg({ aeroMode: 'barrowman', finCant: 1 });
+  near('cant モーメント係数 2·CNα_F·A·δ·(R+Ymac)', Mc.cantMoment(1000, 0) / 1000, 2 * 9.807 * Mc.A * D2R * 0.12209, { rel: 1e-3 });
+  ok('manual + finCant + clp −0.14 は警告なし', !dbg({ finCant: 1 }).warn.some(w => w.includes('基準長')));
+  ok('manual + finCant + clp −0.01 は基準長の警告', dbg({ finCant: 1, clp: -0.01 }).warn.some(w => w.includes('基準長')));
+});
+
+grp('aeroTable の補間', 'S8');
+run('aeroTable', () => {
+  const tbl = 'Mach,Cd,CNa,Xcp\n0, 0.40, 10, 1250\n1.0, 0.80, 12, 1300\n';
+  const M = dbg({ aeroTable: tbl, cdScale: 100 });
+  near('Cd(0.5) 線形補間', M.cdAt(0.5), 0.6, { abs: 1e-12 }); near('Cd(0.25) 線形補間', M.cdAt(0.25), 0.5, { abs: 1e-12 });
+  near('Cd(2) 上側クランプ', M.cdAt(2), 0.8, { abs: 1e-12 }); near('Cd(−1) 下側クランプ', M.cdAt(-1), 0.4, { abs: 1e-12 });
+  near('CNa(0.5)', M.cpAt(0.5).cna, 11, { abs: 1e-12 }); near('Xcp(0.5) [m, 先端]', M.cpAt(0.5).xcp, 1.275, { abs: 1e-12 });
+  near('cdScale を掛ける', dbg({ aeroTable: tbl, cdScale: 120 }).cdAt(0.5), 0.72, { abs: 1e-12 });
+  const M3 = dbg({ aeroTable: '0.8,0.6\n0,0.4\n2,1.0' });
+  near('行の順序に依存しない（並べ替え）', M3.cdAt(0.4), 0.5, { abs: 1e-12 }); near('3 点の 2 区間目', M3.cdAt(1.4), 0.8, { abs: 1e-12 });
+  const Mb = dbg({ aeroMode: 'barrowman', aeroTable: '0 0.5\n1 0.9' });
+  near('barrowman + Cd 列だけ（空白区切り）', Mb.cdAt(0.25), 0.6, { abs: 1e-12 }); near('CNa 列なし → barrowman のまま', Mb.cpAt(0).cna, 11.807, { abs: 0.01 });
+  ok('読めない表は警告', dbg({ aeroTable: 'abc' }).warn.some(w => w.includes('aeroTable')));
+  const S0 = simulate(dbg()), S2 = simulate(dbg({ aeroTable: '0,0.74\n2,0.74' }));
+  ok('表の Cd が飛行に効く（Cd 2 倍で頂点が下がる）', S2.st.apogee < S0.st.apogee - 1, `${fmtv(S2.st.apogee)} < ${fmtv(S0.st.apogee)}`);
+});
+
+grp('§2.7 圧力推力', 'S9');
+run('pressure thrust', () => {
+  const M = dbg(), tF = M.pts.find(p => p[1] === M.Fmax)[0];
+  const dF = M.thrust(tF, 1000) - M.thrust(tF);
+  near('ΔF @1000 m, 推力最大付近 ≈ 2.9 N', dF, 2.9, { abs: 0.1 });
+  const pS = atm(M, 0).p, p1 = atm(M, 1000).p, Ae = Math.PI * 0.009 ** 2;
+  near('ΔF = (p_site − p(h))·A_e（F ≥ 0.05·Fmax）', dF, (pS - p1) * Ae, { rel: 1e-9 });
+  near('射点では ΔF = 0', M.thrust(tF, 0) - M.thrust(tF), 0, { abs: 1e-9 });
+  ok('推力 0 では加えない', M.thrust(M.tb + 1, 1000) === 0);
+  ok('nozzleExitD = 0 なら補正なし', dbg({ nozzleExitD: 0 }).thrust(tF, 1000) === M.thrust(tF));
+  // 尾部で F = 0.025·Fmax となる時刻を二分法で探し、ΔF が min(1, F/(0.05·Fmax)) = 0.5 倍になることを確かめる
+  let a = tF, b = M.tb;
+  for (let i = 0; i < 80; i++) { const m = (a + b) / 2; if (M.thrust(m) > 0.025 * M.Fmax) a = m; else b = m; }
+  const tq = (a + b) / 2;
+  near('F = 0.025·Fmax では ΔF が半分（立下りのランプ）', M.thrust(tq, 1000) - M.thrust(tq), 0.5 * dF, { rel: 1e-6 });
+  const siteM = dbg({ siteAlt: 500 });
+  near('射点標高 500 m・z = 500 m の ΔF は p(500) − p(1000) 基準', siteM.thrust(tF, 500) - siteM.thrust(tF), (atm(siteM, 500).p - atm(siteM, 1000).p) * Ae, { rel: 1e-9 });
+});
+
+grp('normalizeCfg（移行・冪等）', 'S2');
+run('normalizeCfg', () => {
+  const a = normalizeCfg({ recMode: 'none' });
+  ok("{recMode:'none'} → rec1/rec2 'none'", a.rec1 === 'none' && a.rec2 === 'none', `${a.rec1}/${a.rec2}`);
+  ok('recMode・delay を削除', !('recMode' in a) && !('delay' in a));
+  const b = normalizeCfg({ recMode: 'delay', delay: 5 });
+  ok("delay → rec1 'burnout', rec1Time 5, rec2 'none'", b.rec1 === 'burnout' && b.rec1Time === 5 && b.rec2 === 'none');
+  ok('delay 未指定 → rec1Time 8', normalizeCfg({ recMode: 'delay' }).rec1Time === 8);
+  ok('recMode は rec1 があっても上書き', normalizeCfg({ recMode: 'dual', rec1: 'none' }).rec1 === 'apogee');
+  ok('未知の recMode → dual', (x => x.rec1 === 'apogee' && x.rec2 === 'altitude')(normalizeCfg({ recMode: 'xyz' })));
+  ok("apogee → {apogee, none}", (x => x.rec1 === 'apogee' && x.rec2 === 'none')(normalizeCfg({ recMode: 'apogee' })));
+  ok("dual → {apogee, altitude}", (x => x.rec1 === 'apogee' && x.rec2 === 'altitude')(normalizeCfg({ recMode: 'dual' })));
+  ok("移行後の buildModel/simulate も rec1 'none'（弾道落下）", (S => !S.ev.deploy1 && !S.ev.deploy2 && !!S.ev.landing)(simulate(buildModel({ recMode: 'none' }))));
+  const inp = { recMode: 'delay', delay: 3, windExp: 6, cmq: '', openTime: -1 };
+  const snap = JSON.stringify(inp), n1 = normalizeCfg(inp);
+  ok('入力を変更しない', JSON.stringify(inp) === snap);
+  const n2 = normalizeCfg(n1), n3 = normalizeCfg({ ...n1 });
+  ok('冪等（値）', JSON.stringify(n2) === JSON.stringify(n1) && JSON.stringify(n3) === JSON.stringify(n1));
+  ok('冪等（Debug cfg）', (x => JSON.stringify(normalizeCfg(x)) === JSON.stringify(x))(normalizeCfg(DEBUG)));
+  ok('__warn は非列挙で引き継がれる', !Object.keys(n1).includes('__warn') && n2.__warn.length === n1.__warn.length && n1.__warn.length === 2, JSON.stringify(n1.__warn));
+  sec('X');
+  near('windExp 6 → 1/6', n1.windExp, 1 / 6, { abs: 1e-15 });
+  ok("cmq '' → null", n1.cmq === null); ok('openTime −1 → 0', n1.openTime === 0);
+  ok('windRef ≥ 0.1', normalizeCfg({ windRef: 0 }).windRef === 0.1);
+  ok('hBurnTime ≥ 0.01', normalizeCfg({ hBurnTime: 0 }).hBurnTime === 0.01);
+  ok('hFuelPost ≤ hFuelPre', normalizeCfg({ hFuelPre: 300, hFuelPost: 350 }).hFuelPost === 300);
+  ok('windExp −0.2 → 0', normalizeCfg({ windExp: -0.2 }).windExp === 0);
+  const p = normalizeCfg({ ...DEBUG, payloadMass: 3100 });
+  ok('payloadMass ≥ 0.5·燃焼終了時質量 → payloadOn=false', p.payloadOn === false && p.__warn.length === 1, JSON.stringify(p.__warn));
+  ok('payloadMass 3000 g は可', normalizeCfg({ ...DEBUG, payloadMass: 3000 }).payloadOn === true);
+  ok('motor: 機体+ケース質量 2260 g で判定', normalizeCfg({ payloadOn: true, payloadMass: 1130 }).payloadOn === false && normalizeCfg({ payloadOn: true, payloadMass: 1129 }).payloadOn === true);
+  ok("cmq '-2.5' → 数値", normalizeCfg({ cmq: '-2.5' }).cmq === -2.5);
+  ok("clp null は null のまま", normalizeCfg({ clp: null }).clp === null);
+  ok('数値文字列 → number', normalizeCfg({ d: '120' }).d === 120);
+  ok("enum の大文字小文字（'Ogive'）", normalizeCfg({ noseShape: 'Ogive' }).noseShape === 'ogive');
+  ok('PHYS_DEFAULTS に recMode/delay なし・engText 空', !('recMode' in PHYS_DEFAULTS) && !('delay' in PHYS_DEFAULTS) && PHYS_DEFAULTS.engText === '');
+  ok('buildModel が __warn を M.warn に引き継ぐ', buildModel({ windExp: 7 }).warn.some(w => w.includes('べき指数')));
+  near('cfgLenMm', cfgLenMm({ noseLen: 300, bodyLen: 1300, tailLen: 0 }), 1600, { abs: 0 });
+});
+
+grp('declCheck / enuToLatLon / 方位', 'S10');
+run('decl', () => {
+  const msg = declCheck(35.177228, 140.357056, 7.6);
+  ok('Debug +7.6 で警告', typeof msg === 'string', msg);
+  ok('警告文は契約どおり', msg === '日本の磁気偏角は西偏（本様式では負）。符号を確認してください（現在 7.6°）', msg);
+  ok('値は自動で反転しない（M.c.magDecl = 7.6 のまま）', dbg().c.magDecl === 7.6);
+  ok('−7.6 は null', declCheck(35.177228, 140.357056, -7.6) === null);
+  ok('日本域外は null', declCheck(0, 0, 7.6) === null);
+  ok('境界 −3 / −11 は null', declCheck(35, 140, -3) === null && declCheck(35, 140, -11) === null);
+  ok('−2.9 / −11.1 は警告', typeof declCheck(35, 140, -2.9) === 'string' && typeof declCheck(35, 140, -11.1) === 'string');
+  ok('偏角 0（未入力）も日本域では警告', typeof declCheck(35, 140, 0) === 'string');
+  sec('X');
+  // 楕円体の曲率半径（35°）: 子午線 M, 卯酉線 N
+  const s35 = Math.sin(35 * D2R), w35 = 1 - 0.00669437999014 * s35 * s35, M35 = 6378137 * (1 - 0.00669437999014) / w35 ** 1.5, N35 = 6378137 / Math.sqrt(w35);
+  const [la, lo] = enuToLatLon(35, 140, 1000, M35 * D2R);
+  near('enuToLatLon 北 1°（子午線曲率半径）', la, 36, { abs: 1e-12 }); near('enuToLatLon 東 1000 m（卯酉線曲率半径）', lo, 140 + 1000 / (N35 * Math.cos(35 * D2R)) / D2R, { abs: 1e-12 });
+  const back = latLonToEnu(35, 140, la, lo);
+  near('latLonToEnu は逆変換（東）', back[0], 1000, { abs: 1e-6 }); near('latLonToEnu は逆変換（北）', back[1], M35 * D2R, { abs: 1e-6 });
+  const Mw = dbg({ windDirRef: 'magnetic', windFrom: 0 });
+  near('windDirRef magnetic: 真風向 7.6°', Mw.windFromTrue, 7.6, { abs: 1e-12 });
+  near('wdir は風下方向', Math.atan2(Mw.wdir[0], Mw.wdir[1]) / D2R, 187.6 - 360, { abs: 1e-9 });
+  near('azimRef true は magDecl を足さない', dbg({ azimRef: 'true' }).trueAzim / D2R, 180, { abs: 1e-12 });
+  near('trueAzim: 2° − 7.6°（磁北）→ 354.4°', dbg({ azim: 2, magDecl: -7.6 }).trueAzim / D2R, 354.4, { abs: 1e-9 });
+});
+
+grp('慣性モーメントの下限・単位警告');
+run('inertia', () => {
+  const M = dbg({ Ipitch: 0.0015 });
+  ok('Ipitch 0.0015 → 単位警告', M.warn.some(w => w.includes('単位')), JSON.stringify(M.warn));
+  ok('Ipitch 0.0015 → 下限張り付き警告', M.warn.some(w => w.includes('下限')));
+  near('下限 0.01·m·L²', M.massAt(0).I, 0.01 * 6.581 * 2.56, { rel: 1e-12 });
+  const Ma = dbg({ inertiaMode: 'auto' });
+  near('hybrid auto: I_dry = m_dry·L²/12（乾燥重心で）', Ma.massAt(0).I, 6.19 * 2.56 / 12 + 6.19 * (1.00852 - 1.0213224) ** 2 + 0.391 * (1.224 - 1.0213224) ** 2, { rel: 1e-5 });
+  near('auto ロール 0.5·m·R²', Ma.massAt(0).Ir, 0.5 * 6.581 * 0.065 ** 2, { rel: 1e-12 });
+  ok('manual ロールは酸化剤分を加えない（Iroll のまま）', dbg().massAt(0).Ir === 0.09 && dbg().massAt(10).Ir === 0.09);
+  ok('hBurnTime > 作動時間 → 警告', dbg({ hBurnTime: 5 }).warn.some(w => w.includes('燃焼時間')));
+});
+
+grp('rotDeriv（自由ジャイロ, RK4 h=0.003, 10 s）', 'S4');
+run('rotDeriv gyro', () => {
+  const It = 1.5, Ir = 0.09, z = [0, 0, 0];
+  let u = [0, 0, 1], w = [0.5, 0, 0], p = 20;
+  const dot = (a, b) => a[0] * b[0] + a[1] * b[1] + a[2] * b[2];
+  const cross = (a, b) => [a[1] * b[2] - a[2] * b[1], a[2] * b[0] - a[0] * b[2], a[0] * b[1] - a[1] * b[0]];
+  const H = (u, w, p) => [0, 1, 2].map(i => It * w[i] + Ir * p * u[i]);
+  const H0 = H(u, w, p), nH0 = Math.hypot(...H0), eH = H0.map(x => x / nH0);
+  const perp = v => { const k = dot(v, eH); return v.map((x, i) => x - k * eH[i]); };
+  const h = 0.003, n = Math.round(10 / h), tt = n * h;
+  const ax = (a, b, k) => a.map((x, i) => x + k * b[i]);
+  let maxRaw = 0, maxPerp = 0, maxH = 0, ang = 0, prev = perp(u);
+  for (let s = 0; s < n; s++) {
+    const d1 = rotDeriv(u, w, p, z, It, Ir);
+    const d2 = rotDeriv(ax(u, d1.du, h / 2), ax(w, d1.dw, h / 2), p + h / 2 * d1.dp, z, It, Ir);
+    const d3 = rotDeriv(ax(u, d2.du, h / 2), ax(w, d2.dw, h / 2), p + h / 2 * d2.dp, z, It, Ir);
+    const d4 = rotDeriv(ax(u, d3.du, h), ax(w, d3.dw, h), p + h * d3.dp, z, It, Ir);
+    u = u.map((x, i) => x + h / 6 * (d1.du[i] + 2 * d2.du[i] + 2 * d3.du[i] + d4.du[i]));
+    w = w.map((x, i) => x + h / 6 * (d1.dw[i] + 2 * d2.dw[i] + 2 * d3.dw[i] + d4.dw[i]));
+    p += h / 6 * (d1.dp + 2 * d2.dp + 2 * d3.dp + d4.dp);
+    maxRaw = Math.max(maxRaw, Math.abs(dot(w, u)) / Math.hypot(...u)); // §2.6 の射影の前
+    const nu = Math.hypot(...u); u = u.map(x => x / nu);                  // §2.6: u を正規化
+    const wu = dot(w, u); w = w.map((x, i) => x - wu * u[i]);             //        ω⊥ を u に垂直へ戻す
+    maxPerp = Math.max(maxPerp, Math.abs(dot(w, u)));
+    const Hs = H(u, w, p); maxH = Math.max(maxH, Math.hypot(Hs[0] - H0[0], Hs[1] - H0[1], Hs[2] - H0[2]) / nH0);
+    const cur = perp(u); ang += Math.atan2(dot(cross(prev, cur), eH), dot(prev, cur)); prev = cur; // 歳差角を連続に追跡
+  }
+  const H1 = H(u, w, p), dH = Math.hypot(H1[0] - H0[0], H1[1] - H0[1], H1[2] - H0[2]) / nH0;
+  ok('|H − H0|/|H0| < 1e-6（10 s 後）', dH < 1e-6, dH.toExponential(3), '< 1e-6');
+  ok('|H − H0|/|H0| < 1e-6（全ステップの最大）', maxH < 1e-6, maxH.toExponential(3), '< 1e-6');
+  ok('|ω⊥·u| < 1e-9（射影後）', maxPerp < 1e-9, maxPerp.toExponential(3), '< 1e-9');
+  ok('|ω⊥·u| < 1e-9（射影前の 1 ステップのずれ）', maxRaw < 1e-9, maxRaw.toExponential(3), '< 1e-9');
+  const Om = nH0 / It;
+  near('歳差角速度 = |H|/I_t（相対 1e-4）', ang / tt, Om, { rel: 1e-4 });
+  ok('歳差は 2 周以上（連続追跡の確認）', ang > 4 * Math.PI, fmtv(ang));
+  near('u と H のなす角（章動なし）は一定', Math.acos(dot(u, eH)), Math.acos(eH[2]), { abs: 1e-6 });
+  ok('p は一定（τ = 0）', Math.abs(p - 20) < 1e-12, fmtv(p));
+});
+run('rotDeriv torque', () => {
+  const dot = (a, b) => a[0] * b[0] + a[1] * b[1] + a[2] * b[2];
+  // 軸に揃った u での手計算
+  const d = rotDeriv([0, 0, 1], [0.2, -0.1, 0], 5, [0.3, 0.4, 0.5], 2, 0.1);
+  ok('du = ω⊥ × u', d.du.every((x, i) => Math.abs(x - [-0.1, -0.2, 0][i]) < 1e-15), JSON.stringify(d.du), '[-0.1,-0.2,0]');
+  ok('dω⊥ = (τ⊥ − I_r·p·(ω⊥×u))/I_t', d.dw.every((x, i) => Math.abs(x - [0.175, 0.25, 0][i]) < 1e-15), JSON.stringify(d.dw), '[0.175,0.25,0]');
+  near('dp = (τ·u)/I_r', d.dp, 5, { abs: 1e-12 });
+  // 一般の向き: 角運動量の定理 d(I_t·ω⊥ + I_r·p·u)/dt = τ、dω⊥ ⊥ u
+  const u = [0.36, 0.48, 0.8], w = [0.8, 0, -0.36], tau = [0.7, -1.1, 0.4], It = 1.3, Ir = 0.07, p = 12;
+  const e = rotDeriv(u, w, p, tau, It, Ir);
+  const dH = [0, 1, 2].map(i => It * e.dw[i] + Ir * (e.dp * u[i] + p * e.du[i]) - tau[i]);
+  ok('dH/dt = τ（一般の向き）', Math.hypot(...dH) < 1e-12, Math.hypot(...dH).toExponential(2));
+  ok('dω⊥·u = 0（ω⊥·u が保存）', Math.abs(dot(e.dw, u)) < 1e-15 && Math.abs(dot(e.du, u)) < 1e-15);
+});
+
+// ================= 運動（simulate） =================
+grp('motor 回帰', 'S3');
+run('motor 回帰', () => {
+  const S = simulate(buildModel(normalizeCfg({})));
+  near('motor 既定の頂点高度 ≈ 1636 m ±3%', S.st.apogee, 1636, { rel: 0.03 });
+  ok('着地・エラーなし', !!S.ev.landing && !S.ev.error, S.ev.error || '');
+  sec('X');
+  ok('戻り値は 4 キー', ['rec', 'ev', 'st', 'payload'].every(k => k in S) && Object.keys(S).length === 4);
+  ok('deploy1 → deploy2 の順', S.ev.deploy1 && S.ev.deploy2 && S.ev.deploy2.t >= S.ev.deploy1.t);
+  near('buildModel({}) でも同じ頂点（内部で normalizeCfg）', simulate(buildModel({})).st.apogee, S.st.apogee, { abs: 0 });
+});
+run('Debug 単発', () => {
+  sec('X');
+  const S = simulate(dbg());
+  ok('Debug: 着地・エラーなし', !!S.ev.landing && !S.ev.error, S.ev.error || fmtv(S.st.apogee));
+  ok('railExit.alphaW あり', Number.isFinite(S.ev.railExit && S.ev.railExit.alphaW), S.ev.railExit && fmtv(S.ev.railExit.alphaW));
+  ok('deploy1.by = apogee', S.ev.deploy1 && S.ev.deploy1.by === 'apogee');
+  const B = simulate(dbg(), { ballistic: true });
+  ok('ballistic は展開しない', !B.ev.deploy1 && !B.ev.deploy2 && !!B.ev.landing);
+  const N = simulate(dbg({ rec1: 'none', rec2: 'ignition', rec2Time: 5 }));
+  ok("rec1 'none' は rec2 も無視", !N.ev.deploy1 && !N.ev.deploy2);
+  const E = simulate(dbg({ rec2: 'ignition', rec2Time: 5 }));
+  ok('rec2 が先 → 同時展開・beforeDeploy1', E.ev.deploy1 && E.ev.deploy2 && E.ev.deploy2.beforeDeploy1 === true && E.ev.deploy1.t === E.ev.deploy2.t);
+});
+
+grp('lugAft', 'S11');
+run('lugAft', () => {
+  const L0 = simulate(dbg()), Lg = simulate(dbg({ lugAft: 1000 }));
+  ok('lugAft でレール離脱が早まる', Lg.ev.railExit.t < L0.ev.railExit.t, fmtv(Lg.ev.railExit.t), `< ${fmtv(L0.ev.railExit.t)}`);
+  ok('レール離脱速度も下がる', Lg.ev.railExit.V < L0.ev.railExit.V, fmtv(Lg.ev.railExit.V), `< ${fmtv(L0.ev.railExit.V)}`);
+  const Lr = simulate(dbg({ railLen: 4, lugAft: 0 }));
+  near('railLen 5 m・lugAft 1000 mm ≡ railLen 4 m・lugAft 0（離脱時刻）', Lg.ev.railExit.t, Lr.ev.railExit.t, { abs: 1e-12 });
+  near('同（離脱速度）', Lg.ev.railExit.V, Lr.ev.railExit.V, { abs: 1e-12 });
+  near('railEff = railLen − lugAft/1000', dbg({ lugAft: 1000 }).railEff, 4, { abs: 1e-12 });
+  const L6 = simulate(dbg({ lugAft: 6000 }));
+  ok('lugAft ≥ railLen でも離床前には離脱しない', !!L6.ev.landing && !L6.ev.error && L6.ev.railExit.t >= L6.ev.liftoff.t && L6.rec.every(r => r.z >= -1e-9), L6.ev.error || `${fmtv(L6.ev.railExit.t)} ≥ ${fmtv(L6.ev.liftoff.t)}`);
+});
+
+grp("landSurface 'sea'", 'S12');
+run('landSurface', () => {
+  const Sea = simulate(dbg({ landSurface: 'sea', siteAlt: 40 })), Site = simulate(dbg({ landSurface: 'site', siteAlt: 40 }));
+  ok("'sea': 本体は z = −siteAlt で着地", !!Sea.ev.landing && Math.abs(Sea.rec[Sea.rec.length - 1].z + 40) < 1e-9, fmtv(Sea.rec[Sea.rec.length - 1].z), '-40');
+  ok("'sea': ペイロードも z = −siteAlt で着地", !!(Sea.payload && Sea.payload.landing) && Math.abs(Sea.payload.rec[Sea.payload.rec.length - 1].z + 40) < 1e-9);
+  ok("'site': z = 0 で着地", !!Site.ev.landing && Math.abs(Site.rec[Site.rec.length - 1].z) < 1e-9, fmtv(Site.rec[Site.rec.length - 1].z), '0');
+  ok("'sea' は 'site' より遅く着地する（40 m 余分に降下）", Sea.ev.landing.t > Site.ev.landing.t + 3, `${fmtv(Sea.ev.landing.t)} > ${fmtv(Site.ev.landing.t)}`);
+  ok("'sea' でも途中の記録に z < −siteAlt は無い", Sea.rec.every(r => r.z >= -40 - 1e-9));
+  ok("siteAlt 0 なら 'sea' と 'site' は同じ着地点", (A => Math.abs(A.ev.landing.x - simulate(dbg()).ev.landing.x) < 1e-9)(simulate(dbg({ landSurface: 'sea' }))));
+});
+
+grp('P1 追加確認');
+run('extra', () => {
+  // rec / st の新フィールド
+  const S = simulate(dbg()), r = S.rec[S.rec.length - 1];
+  ok('rec に roll/p/cg/fst', ['roll', 'p', 'cg', 'fst'].every(k => k in r), Object.keys(r).join(','));
+  ok('st.maxRollRate あり', 'maxRollRate' in S.st && Number.isFinite(S.st.maxRollRate));
+  ok('payload キーは null か object', S.payload === null || typeof S.payload === 'object');
+  ok('ev.burnout.t = M.tb', S.ev.burnout && S.ev.burnout.t === dbg().tb);
+  // opt.wind は wind/windFrom を上書きし gust を 0 にする（from は windDirRef 基準）
+  const A = simulate(dbg({ gust: 2 }), { wind: { speed: 3, from: 90 } }), B = simulate(dbg({ gust: 0, wind: 3, windFrom: 90 }));
+  near('opt.wind = cfg 指定と同じ着地点 x', A.ev.landing.x, B.ev.landing.x, { abs: 1e-9 });
+  const Am = simulate(dbg({ windDirRef: 'magnetic' }), { wind: { speed: 3, from: 82.4 } });
+  near('opt.wind.from は windDirRef 基準（磁 82.4 = 真 90）', Am.ev.landing.x, B.ev.landing.x, { abs: 1e-9 });
+  // 等価直径
+  const M = dbg();
+  near('payloadDia = 2√(CdS/(π·0.8))', M.payloadDia, 2 * Math.sqrt(0.11354167 / (Math.PI * 0.8)), { rel: 1e-6 });
+  ok('c2Dia は有限（velocity, rec2 none → 0）', Number.isFinite(M.c2Dia));
+  // 推力曲線の先頭にゼロ推力区間がある場合（曲線の t=0 = 点火、ゼロ区間は削らない）
+  const Mi = dbg({ engText: '0 0\n0.5 0\n0.6 500\n2.5 300\n3.0 0' });
+  near('tIgn = 0.05·Fmax 到達時刻', Mi.tIgn, 0.5 + 0.1 * 0.05, { abs: 1e-9 });
+  ok('点火前は満充填の質量', Mi.massAt(0.3).m === Mi.massAt(0).m && Math.abs(Mi.massAt(0).m - 6.581) < 1e-12);
+  near('tEnd = tIgn + hBurnTime（> tb のとき）', dbg({ engText: '0 0\n0.5 0\n0.6 500\n2.5 0', hOpTime: 0 }).tEnd, 0.505 + 2.393, { abs: 1e-9 });
+  // motor モードのペイロード放出（機体質量に含まれる）
+  const Mm = buildModel({ payloadOn: true, payloadMass: 200, payloadPos: 250 });
+  near('motor: 放出後は payloadMass を引く', Mm.massAt(10).m - Mm.massAt(10, true).m, 0.2, { abs: 1e-12 });
+  ok('motor: payloadOn → ペイロード関連の reviewValues が数値', Number.isFinite(reviewValues(Mm).fstAfterPayload_pct));
+  ok("boolean の文字列 'false'", normalizeCfg({ machCorr: 'false', hOxDrain: 'TRUE' }).machCorr === false && normalizeCfg({ hOxDrain: 'TRUE' }).hOxDrain === true);
+  // PHYS_DEFAULTS は spec §2 の全キーを持つ
+  const keys = ('name posRef lat lon magDecl azimRef windDirRef windRef lugAft landSurface massMode hDryMass hDryCG hOxMass hOxCG hTankOutlet hFuelPre hFuelPost hFuelCG ' +
+    'hBurnTime hOpTime hOxDrain inertiaMode Ipitch Iroll aeroMode cpManual cnaManual cmq clp aeroTable finCant nozzleExitD thrustKind payloadOn payloadMass payloadPos ' +
+    'payloadTime payloadVt rec1 rec1Time rec1Delay rec1Backup rec2 rec2Time chuteSpec c1Vt c2Vt dtApoWarn').split(' ');
+  const miss = keys.filter(k => !(k in PHYS_DEFAULTS));
+  ok('PHYS_DEFAULTS に §2 の新規キーがすべてある', miss.length === 0, miss.join(','));
+});
+
+grp('ロール（§2.5 / §2.6, barrowman, finCant 1°）', 'S5');
+run('cant roll', () => {
+  const M = dbg({ aeroMode: 'barrowman', finCant: 1 }), S = simulate(M);
+  ok('エラーなし', !S.ev.error, S.ev.error || '');
+  const r = nearRec(S.rec, M.tb), exp = r.va * D2R * M.Rcant / M.rg2;
+  near('燃焼終了時 |p| ≈ V_a·δ·(R+Ymac)/r_g²（±30%）', Math.abs(r.p), exp, { rel: 0.3 });
+  sec('X');
+  near('st.maxRollRate = max|p|', S.st.maxRollRate, Math.max(...S.rec.map(q => Math.abs(q.p))), { rel: 0.02 });
+  const rmax = Math.max(...S.rec.map(q => q.roll));
+  ok('roll は mod 2π しない（> 2π まで増える）', rmax > 2 * Math.PI, fmtv(rmax));
+  const p2 = S.rec.filter(q => q.ph === 2);
+  ok('ph = 2 では roll 一定・p = 0', p2.length > 0 && p2.every(q => q.roll === p2[0].roll && q.p === 0));
+  const p0 = S.rec.filter(q => q.ph === 0);
+  ok('ph = 0（レール上）は roll = p = 0', p0.length > 0 && p0.every(q => q.roll === 0 && q.p === 0));
+  ok('|u| = 1（全記録）', S.rec.every(q => Math.abs(Math.hypot(q.ux, q.uy, q.uz) - 1) < 1e-9));
+  const Mn = dbg({ aeroMode: 'barrowman', finCant: -1 }), Sn = simulate(Mn), rn = nearRec(Sn.rec, Mn.tb);
+  ok('δ < 0 で逆回転', rn.p < 0 && r.p > 0, fmtv(rn.p), fmtv(r.p));
+  ok('finCant = 0 では p ≈ 0', simulate(dbg()).st.maxRollRate < 1e-6);
+});
+
+grp('硬さ対策（§3.2 サブステップ）', 'S13');
+run('stiff', () => {
+  const S = simulate(dbg({ Ipitch: 0.0015 }));
+  const fin = S.rec.every(r => ['z', 'vz', 'ux', 'uy', 'uz', 'p', 'm'].every(k => Number.isFinite(r[k])));
+  ok('Ipitch = 0.0015 manual で NaN にならない（着地 or 硬さエラー）', fin && (!!S.ev.landing || /硬すぎ/.test(S.ev.error || '')), S.ev.error || fmtv(S.st.apogee));
+  ok('Ipitch = 0.0015: 頂点・着地点が有限', Number.isFinite(S.st.apogee) && (!S.ev.landing || (Number.isFinite(S.ev.landing.x) && Number.isFinite(S.ev.landing.y))));
+  const X = simulate(dbg({ cmq: -1e7 }));
+  ok('極端に硬い（cmq −1e7）→ ev.error で止まる', X.ev.error === '回転運動が硬すぎます（慣性モーメント・減衰係数の単位を確認）', X.ev.error || '');
+  ok('硬さエラーでも 4 キー・記録は有限', ['rec', 'ev', 'st', 'payload'].every(k => k in X) && X.rec.every(r => Number.isFinite(r.z)));
+  const Y = simulate(dbg({ cmq: -300, Ipitch: 0.2 }));
+  ok('強い減衰（cmq −300）はサブステップで完走', !!Y.ev.landing && !Y.ev.error && Y.rec.every(r => Number.isFinite(r.z)), Y.ev.error || fmtv(Y.st.apogee));
+  const Z = simulate(dbg({ Iroll: 1e-5, finCant: 1, aeroMode: 'barrowman' }));
+  ok('Iroll が小さすぎても下限で止まり NaN にならない', Z.rec.every(r => Number.isFinite(r.p)) && (!!Z.ev.landing || /硬すぎ/.test(Z.ev.error || '')), Z.ev.error || fmtv(Z.st.maxRollRate));
+});
+
+grp('回収系（§2.9）・降下速度', 'S6');
+run('descent velocity', () => {
+  const M = dbg({ wind: 0, gust: 0 }), S = simulate(M);
+  let worst = 0, cnt = 0;
+  for (const r of S.rec) if (r.ph === 2 && r.t >= S.ev.deploy1.t + 5 && r.z < 50) {
+    const e = 8.08 * Math.sqrt(r.m / 6.132) * Math.sqrt(1.2 / atm(M, M.siteAlt + r.z).rho);
+    worst = Math.max(worst, Math.abs(Math.abs(r.vz) / e - 1)); cnt++;
+  }
+  ok('velocity 指定: 展開 5 s 後・z < 50 m の |vz| が ±1%', cnt > 5 && worst <= 0.01, `最大相対誤差 ${worst.toExponential(2)}（${cnt} 点）`, '≤ 1e-2');
+  ok('無風・rec1 apogee・velocity の前提', M.c.chuteSpec === 'velocity' && M.c.rec1 === 'apogee' && M.wind === 0 && !!S.ev.deploy1 && S.ev.deploy1.by === 'apogee');
+  sec('X');
+  // velocity 2 段: 2 段目展開後は c2Vt（1 段目は (1 − r2) で消える）
+  const M2 = dbg({ wind: 0, gust: 0, rec2: 'ignition', rec2Time: 30, c2Vt: 5 }), S2 = simulate(M2);
+  let w2 = 0, n2 = 0;
+  for (const r of S2.rec) if (r.ph === 2 && r.t >= S2.ev.deploy2.t + 5 && r.z < 50) {
+    const e = 5 * Math.sqrt(r.m / 6.132) * Math.sqrt(1.2 / atm(M2, M2.siteAlt + r.z).rho);
+    w2 = Math.max(w2, Math.abs(Math.abs(r.vz) / e - 1)); n2++;
+  }
+  ok('velocity 2 段目: |vz| ≈ c2Vt（±1%、機体抗力なし）', n2 > 5 && w2 <= 0.01, `最大相対誤差 ${w2.toExponential(2)}（${n2} 点）`);
+  // diameter: CdA = A·cd0 + c1CdA（機体抗力を加算）
+  const M3 = dbg({ wind: 0, gust: 0, chuteSpec: 'diameter', c1D: 1000, c1Cd: 0.8 }), S3 = simulate(M3);
+  let w3 = 0, n3 = 0;
+  for (const r of S3.rec) if (r.ph === 2 && r.t >= S3.ev.deploy1.t + 5 && r.z < 50) {
+    const g = G0 * (RE / (RE + M3.siteAlt + r.z)) ** 2, rho = atm(M3, M3.siteAlt + r.z).rho;
+    const e = Math.sqrt(2 * r.m * g / (rho * (M3.A * M3.cd0 + M3.c1CdA)));
+    w3 = Math.max(w3, Math.abs(Math.abs(r.vz) / e - 1)); n3++;
+  }
+  ok('diameter: |vz| = √(2mg/(ρ(A·cd0 + c1CdA)))（±1%）', n3 > 5 && w3 <= 0.01, `最大相対誤差 ${w3.toExponential(2)}（${n3} 点）`);
+});
+run('deploy rules', () => {
+  sec('X');
+  const dt = dbg().dt;
+  const A = simulate(dbg({ rec1Delay: 2 }));
+  const dA = A.ev.deploy1 ? A.ev.deploy1.t - A.ev.apogee.t : NaN;
+  ok('rec1Delay: deploy1 − apogee ∈ [2, 2 + dt]', dA >= 2 - 1e-9 && dA <= 2 + dt + 1e-9, fmtv(dA));
+  ok('rec1Delay: by = apogee', A.ev.deploy1 && A.ev.deploy1.by === 'apogee');
+  const B = simulate(dbg({ rec1Backup: 8 }));
+  ok("rec1Backup 8 s（頂点より前）→ by = 'timer', t ≈ 8", B.ev.deploy1 && B.ev.deploy1.by === 'timer' && Math.abs(B.ev.deploy1.t - 8) <= dt + 1e-9, B.ev.deploy1 && `${B.ev.deploy1.by} ${fmtv(B.ev.deploy1.t)}`);
+  const B2 = simulate(dbg({ rec1Backup: 30 }));
+  ok("rec1Backup 30 s（頂点より後）→ by = 'apogee'", B2.ev.deploy1 && B2.ev.deploy1.by === 'apogee');
+  const C = simulate(dbg({ rec1: 'burnout', rec1Time: 3 }));
+  ok("rec1 'burnout': t ≈ M.tb + rec1Time", C.ev.deploy1 && Math.abs(C.ev.deploy1.t - (dbg().tb + 3)) <= dt + 1e-9, C.ev.deploy1 && fmtv(C.ev.deploy1.t));
+  const D = simulate(dbg({ rec1: 'ignition', rec1Time: 0 }));
+  ok('phase 0 では展開しない → レール離脱の直後に展開', D.ev.deploy1 && D.ev.railExit && D.ev.deploy1.t === D.ev.railExit.t, D.ev.deploy1 && `${fmtv(D.ev.deploy1.t)} / ${fmtv(D.ev.railExit.t)}`);
+  ok('ph = 2 の記録があれば deploy1 がある', [A, B, C, D].every(S => !S.rec.some(r => r.ph === 2) || !!S.ev.deploy1));
+  const E = simulate(buildModel({}));
+  ok("rec2 'altitude': deploy2.z ≤ mainAlt, t > deploy1.t", E.ev.deploy2 && E.ev.deploy2.z <= 150 && E.ev.deploy2.t > E.ev.deploy1.t, E.ev.deploy2 && fmtv(E.ev.deploy2.z));
+  const d1 = A.ev.deploy1;
+  ok('deploy の各フィールド {t,z,V,vz,q}', ['t', 'z', 'V', 'vz', 'q'].every(k => Number.isFinite(d1[k])));
+  near('deploy1.q = 0.5·ρ·V_a²', d1.q, 0.5 * atm(dbg(), d1.z).rho * d1.V * d1.V, { rel: 1e-9 });
+  const F = simulate(dbg({ rec1: 'none' }));
+  ok("rec1 'none': 弾道落下・ph 2 なし", !F.ev.deploy1 && !F.rec.some(r => r.ph === 2) && !!F.ev.landing);
+});
+
+grp('ペイロード（§2.8）', 'S7');
+run('payload', () => {
+  const M = dbg(), S = simulate(M), P = S.payload;
+  ok('payload は {release, rec, landing}', !!(P && P.release && Array.isArray(P.rec) && 'landing' in P));
+  ok('ペイロードが着地する', !!(P && P.landing && !P.error), P && (P.error || ''));
+  ok('本体より後に着地しても記録される', !!(P && P.landing && S.ev.landing && P.landing.t > S.ev.landing.t), P && P.landing && `${fmtv(P.landing.t)} > ${fmtv(S.ev.landing.t)}`);
+  ok('本体の着地後の区間も payload.rec に記録される', !!P && P.rec.filter(q => q.t > S.ev.landing.t).length > 10, P && P.rec.filter(q => q.t > S.ev.landing.t).length);
+  const B = simulate(dbg(), { ballistic: true });
+  ok('opt.ballistic でも放出する', !!(B.payload && B.payload.release && B.payload.landing) && !B.ev.deploy1 && !B.ev.deploy2);
+  ok('opt.ballistic でもペイロードは着地する', !!(B.payload && B.payload.landing && !B.payload.error));
+  // 本体より先に着地する場合（ペイロードが重い・速い）: 本体はそのまま続ける
+  const Q = simulate(dbg({ payloadVt: 40 })), PQ = Q.payload;
+  ok('ペイロードが本体より先に着地しても本体は着地まで計算', !!(PQ && PQ.landing && Q.ev.landing && PQ.landing.t < Q.ev.landing.t && Q.rec[Q.rec.length - 1].t === Q.ev.landing.t),
+    PQ && PQ.landing && `${fmtv(PQ.landing.t)} < ${fmtv(Q.ev.landing && Q.ev.landing.t)}`);
+  sec('X');
+  ok('放出はステップ境界（t ≥ payloadTime の最初のステップ）', P.release.t >= 7 - 1e-9 && P.release.t < 7 + M.dt + 1e-9, fmtv(P.release.t));
+  ok('ev.payload {t,z,V,q}', !!S.ev.payload && ['t', 'z', 'V', 'q'].every(k => Number.isFinite(S.ev.payload[k])) && S.ev.payload.t === P.release.t);
+  const dts = P.rec.slice(1, -1).map((r, i) => r.t - P.rec[i].t);
+  ok('rec は release から 0.1 s ごと、landing で終わる', P.rec[0].t === P.release.t && dts.every(d => Math.abs(d - 0.1) < 0.021) && P.rec[P.rec.length - 1].t === P.landing.t);
+  ok('本体の記録は本体の着地で止まる', S.rec[S.rec.length - 1].t === S.ev.landing.t);
+  near('ペイロード着地時の |vz| ≈ payloadVt（射点高度）', Math.abs(P.landing.vz), 6 * Math.sqrt(1.2 / atm(M, M.siteAlt).rho), { rel: 0.02 });
+  const R = simulate(dbg(), { record: false });
+  ok('record:false → rec は [] だが release と landing はある', !!(R.payload && R.payload.rec.length === 0 && R.payload.release && R.payload.landing) && R.rec.length === 0);
+  near('record:false でも着地点は同じ', R.payload.landing.x, P.landing.x, { abs: 1e-9 });
+  const Z = simulate(dbg({ payloadTime: 0 }));
+  ok('phase 0 中の放出はレール離脱後の最初のステップまで延ばす', !!Z.payload && Z.payload.release.t > Z.ev.railExit.t && Z.payload.release.t <= Z.ev.railExit.t + M.dt + 1e-9, Z.payload && `${fmtv(Z.payload.release.t)} / ${fmtv(Z.ev.railExit.t)}`);
+  const Lt = simulate(dbg({ payloadTime: 500 }));
+  ok('本体の着地後なら放出しない（payload null）', Lt.payload === null && !Lt.ev.payload);
+  ok('payloadOn = false → payload null', simulate(dbg({ payloadOn: false })).payload === null);
+});
+run('payload CG/momentum', () => {
+  sec('X');
+  // 放出しない飛行と放出する飛行は放出時刻まで同一 → 放出直後の 本体+ペイロード の重心が連続
+  const base = simulate(dbg({ payloadOn: false })), r0 = base.rec.find(r => r.t > 6.5 && r.ph === 1);
+  const M = dbg({ payloadTime: r0.t }), S = simulate(M), rb = S.rec.find(r => r.t === r0.t), P = S.payload;
+  ok('放出時刻の記録がある', !!rb && !!P && P.release.t === r0.t, P && `${fmtv(P.release.t)} / ${fmtv(r0.t)}`);
+  const m = r0.m, mb = rb.m, mp = M.payloadMass, rp = P.release;
+  near('放出後の本体質量 = m − m_p', mb, m - mp, { rel: 1e-12 });
+  const cgx = ['x', 'y', 'z'].map(k => (mb * rb[k] + mp * rp[k]) / m - r0[k]);
+  ok('系の重心は連続（|Δ| < 1e-9 m）', Math.hypot(...cgx) < 1e-9, Math.hypot(...cgx).toExponential(2));
+  const dpos = ['x', 'y', 'z'].map(k => rp[k] - rb[k]);
+  near('|r_p − r_b| = cg_new − x_p', Math.hypot(...dpos), rb.cg - M.payloadPos, { rel: 1e-9 });
+  near('r_p − r_b は機軸 u の向き', (dpos[0] * rb.ux + dpos[1] * rb.uy + dpos[2] * rb.uz) / Math.hypot(...dpos), 1, { abs: 1e-9 });
+});
+
+grp('風・ランチャー・推進');
+run('wind etc', () => {
+  const S = simulate(dbg()), re = S.ev.railExit;
+  ok('railExit {t,V,va,sm,alphaW}', ['t', 'V', 'va', 'sm', 'alphaW'].every(k => Number.isFinite(re[k])));
+  ok('railExit.va は対気速度（横風で V より大きい）', re.va > re.V + 0.05, `${fmtv(re.va)} / ${fmtv(re.V)}`);
+  const N0 = simulate(dbg({ nozzleExitD: 0 }));
+  ok('圧力推力で頂点が上がる', S.st.apogee > N0.st.apogee, `${fmtv(S.st.apogee)} > ${fmtv(N0.st.apogee)}`);
+  const W1 = simulate(dbg({ windRef: 4 })), W2 = simulate(dbg({ windRef: 100 }));
+  ok('windRef を上げると同じ wind でも流されにくい', Math.hypot(W2.ev.landing.x, W2.ev.landing.y) < Math.hypot(W1.ev.landing.x, W1.ev.landing.y));
+  const G = simulate(dbg({ gust: 2 }), { wind: { speed: 4, from: 270 } }), Gr = simulate(dbg({ gust: 0 }));
+  near('opt.wind は gust を 0 にする', G.ev.landing.x, Gr.ev.landing.x, { abs: 1e-9 });
+  const Gs = simulate(dbg({ gust: 2 }));
+  ok('gust > 0 なら着地点が変わる（乱数が効く）', Math.abs(Gs.ev.landing.x - Gr.ev.landing.x) > 1e-6);
+  const P0 = simulate(dbg({ payloadMass: 0 }));
+  ok('payloadMass 0 は放出しない（payload null、本体は正常）', P0.payload === null && !!P0.ev.landing && !P0.ev.error);
+  const E = simulate(dbg({ hDryMass: 200000 }));
+  ok('推力不足 → error・4 キー・payload null', /推力不足/.test(E.ev.error || '') && ['rec', 'ev', 'st', 'payload'].every(k => k in E) && E.payload === null, E.ev.error || '');
+});
+
+grp('flightSummary（§3.4）');
+run('flightSummary', () => {
+  const KEYS = ('railExit_t_s railExit_V_mps railExit_alphaW_deg maxV_mps maxV_t_s maxMach maxQ_Pa maxQ_t_s maxAcc_G opEnd_t_s opEnd_z_m opEnd_V_mps burnEnd_t_s ' +
+    'apogee_m apogee_t_s apogee_range_m deploy1_t_s deploy1_z_m deploy1_Va_mps deploy1_q_Pa deploy1_dtApo_s deploy1_by deploy2_t_s deploy2_z_m deploy2_Va_mps deploy2_q_Pa deploy2_dtApo_s ' +
+    'payload_t_s payload_z_m payload_Va_mps payload_q_Pa payload_dtApo_s payloadOpenLoad_N payloadOpenLoad_G descent1_mps landing_t_s landing_V_mps landing_vz_mps landing_dist_m ' +
+    'landing_brgTrue_deg payloadLanding_dist_m payloadLanding_brgTrue_deg payloadLanding_vz_mps flightEnd_t_s').split(' ');
+  const M = dbg(), S = simulate(M), F = flightSummary(M, S);
+  const miss = KEYS.filter(k => !(k in F));
+  ok('§3.4 の全キー', miss.length === 0 && Object.keys(F).length === KEYS.length, miss.join(','));
+  near('deploy1_dtApo_s = 0（rec1 apogee, delay 0）', F.deploy1_dtApo_s, 0, { abs: 1e-12 });
+  ok('payload_dtApo_s < 0（上昇中に放出）', F.payload_dtApo_s < 0, fmtv(F.payload_dtApo_s));
+  near('payloadOpenLoad_N = q·cdSPayload', F.payloadOpenLoad_N, S.ev.payload.q * 0.11354167, { rel: 1e-6 });
+  near('payloadOpenLoad_G = N/(m_p·G0)', F.payloadOpenLoad_G, F.payloadOpenLoad_N / (0.25 * G0), { rel: 1e-12 });
+  near('flightEnd = max(本体, ペイロード)', F.flightEnd_t_s, Math.max(S.ev.landing.t, S.payload.landing.t), { abs: 0 });
+  near('landing_brgTrue_deg', F.landing_brgTrue_deg, ((Math.atan2(S.ev.landing.x, S.ev.landing.y) / D2R) + 360) % 360, { abs: 1e-9 });
+  near('descent1 = 着地時 |vz|（rec2 none）', F.descent1_mps, Math.abs(S.ev.landing.vz), { abs: 0 });
+  near('opEnd_t_s = M.tb', F.opEnd_t_s, M.tb, { abs: 0 }); near('burnEnd_t_s = tIgn + hBurnTime', F.burnEnd_t_s, M.tIgn + 2.393, { abs: 1e-12 });
+  ok('maxV は上昇区間（maxV_t ≤ apogee_t）', F.maxV_t_s <= F.apogee_t_s && F.maxQ_t_s <= F.apogee_t_s && F.maxV_mps > 0);
+  ok("deploy1_by = 'apogee'", F.deploy1_by === 'apogee');
+  ok('発生しなかった項目は NaN（deploy2）', Number.isNaN(F.deploy2_t_s) && Number.isNaN(F.deploy2_dtApo_s));
+  const B = simulate(dbg(), { ballistic: true }), FB = flightSummary(dbg(), B);
+  ok('ballistic: deploy1 / descent1 は NaN、maxV は上昇区間だけ', Number.isNaN(FB.deploy1_t_s) && Number.isNaN(FB.descent1_mps) && FB.maxV_mps < B.st.maxV, `${fmtv(FB.maxV_mps)} < ${fmtv(B.st.maxV)}`);
+  const R = simulate(dbg(), { record: false }), FR = flightSummary(dbg(), R);
+  const same = k => Object.is(F[k], FR[k]) || Math.abs(F[k] - FR[k]) < 1e-12;
+  ok('record:false でも同じ要約', KEYS.every(same), KEYS.filter(k => !same(k)).join(','));
+  const Md = buildModel({}), Sd = simulate(Md), Fd = flightSummary(Md, Sd);
+  near('descent1 = deploy2 直前の |vz|', Fd.descent1_mps, Math.abs(Sd.ev.deploy2.vz), { abs: 0 });
+  ok('motor: payload 系は NaN、flightEnd = 本体着地', Number.isNaN(Fd.payload_t_s) && Number.isNaN(Fd.payloadLanding_dist_m) && Fd.flightEnd_t_s === Sd.ev.landing.t);
+  const Fe = flightSummary(Md, { rec: [], ev: { error: 'x' }, st: {}, payload: null });
+  ok('例外時の代わりの sim でも落ちない（全項目 NaN か数値）', Object.values(Fe).every(v => typeof v === 'number'));
+});
+}
+
+// ---- 集計と表示 ----
+function report() {
+  // §3.5 の各項目（と B）に検査行が 1 つも無ければ FAIL（カバレッジの保証）
+  for (const [k, label] of ITEMS) if (k !== 'X' && !T.rows.some(r => r.tag === k)) { T.group = 'カバレッジ'; T.tag = k; add(`${label}: 検査行がありません`, 'FAIL', '0 行', '1 行以上'); }
+  const cnt = (rs, s) => rs.filter(r => r.st === s).length;
+  const pass = cnt(T.rows, 'PASS'), fail = cnt(T.rows, 'FAIL');
+  const lines = [`PASS ${pass} / FAIL ${fail}`, '', '項目  PASS  FAIL  判定  §3.5 の検査項目（B: §2.5 Barrowman、X: その他）'];
+  for (const [k, label] of ITEMS) {
+    const rs = T.rows.filter(r => r.tag === k), p = cnt(rs, 'PASS'), f = cnt(rs, 'FAIL');
+    lines.push(`${k.padEnd(4)}  ${String(p).padStart(4)}  ${String(f).padStart(4)}  ${f || !p ? 'FAIL' : 'ok  '}  ${label}`);
+  }
+  if (fail) lines.push('', ...T.rows.filter(r => r.st === 'FAIL').map(r => `FAIL [${r.tag}] ${r.g} / ${r.name}  値=${r.val}  期待=${r.exp}`));
+  document.getElementById('result').textContent = lines.join('\n');
+  const esc = s => String(s).replace(/[&<>]/g, ch => ({ '&': '&amp;', '<': '&lt;', '>': '&gt;' }[ch]));
+  let html = '', g = null;
+  for (const r of T.rows) {
+    if (r.g !== g) { if (g !== null) html += '</tbody></table>'; g = r.g; html += `<h2>${esc(g)}</h2><table><thead><tr><th>§3.5</th><th>項目</th><th>値</th><th>期待</th><th>判定</th></tr></thead><tbody>`; }
+    html += `<tr><td>${esc(r.tag)}</td><td>${esc(r.name)}</td><td class="v">${esc(r.val)}</td><td class="v">${esc(r.exp)}</td><td class="${r.st}">${r.st}</td></tr>`;
+  }
+  document.getElementById('out').innerHTML = html + (g !== null ? '</tbody></table>' : '');
+}
+
+window.addEventListener('load', () => {
+  const t0 = performance.now();
+  try { main(); } catch (e) { grp('テスト本体'); add('main() が最後まで走った', 'FAIL', String(e && e.stack || e), '例外なし'); }
+  report();
+  document.getElementById('result').textContent += `\n\n実行時間 ${(performance.now() - t0).toFixed(0)} ms`;
+});
+</script>
+</body>
+</html>

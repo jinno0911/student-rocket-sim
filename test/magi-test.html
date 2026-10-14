@@ -1,0 +1,125 @@
+<!doctype html>
+<html lang="ja"><head><meta charset="utf-8"><title>Magi 移植機能テスト</title>
+<style>body{font:13px system-ui;margin:12px}td{padding:2px 6px;border-bottom:1px solid #ddd;vertical-align:top}.PASS{color:#080}.FAIL{color:#c00;font-weight:700}</style></head>
+<body>
+<h1>Magi から移植した機能のテスト</h1>
+<p>http://localhost:8775/test/magi-test.html（Web Worker を使うため http で開く）。<code>bash test/headless.sh "http://localhost:8775/test/magi-test.html?noworker" 120000</code>（ヘッドレスはワーカーを待たないので ?noworker で本スレッド実行）</p>
+<pre id="result">running…</pre><table id="tbl"></table>
+<script src="../geo.js"></script><script src="../terrain.js"></script><script src="../physics.js"></script>
+<script>
+// analysis.js / verify.js / design.js が呼ぶ app.js の関数の代わり（描画は使わない）
+var cfg = normalizeCfg({}), model = null, sim = null;
+if (/noworker/.test(location.search)) window.ANALYSIS_NO_WORKER = true; // ヘッドレス Chrome の仮想時間はワーカーを待たないため
+function download() {}
+</script>
+<script src="../analysis.js"></script><script src="../verify.js"></script><script src="../design.js"></script>
+<script>
+const rows = []; let pass = 0, fail = 0;
+const ok = (name, cond, val = '') => { cond ? pass++ : fail++; rows.push(`<tr><td class="${cond ? 'PASS' : 'FAIL'}">${cond ? 'PASS' : 'FAIL'}</td><td>${name}</td><td>${String(val).slice(0, 300)}</td></tr>`); };
+const near = (a, b, tol) => Number.isFinite(a) && Math.abs(a - b) <= tol;
+const sim1 = (p, o = {}) => { const M = buildModel(normalizeCfg(p)), s = simulate(M, { seed: 1, ...o }); return { M, s, f: flightSummary(M, s) }; };
+
+(async () => {
+  try {
+    const G = window.Geo;
+    // ---- geo.js ----
+    const y = G.decimalYear('2026-10-11');
+    ok('decimalYear 2026-10-11 ≈ 2026.777', near(y, 2026.777, 0.002), y);
+    const dTokyo = G.magDecl(35.68, 139.77, 0, y), dLondon = G.magDecl(51.5, -0.13, 0, y), dSyd = G.magDecl(-33.87, 151.2, 0, y);
+    ok('WMM2025: 東京の偏角は西偏 7〜8.5°', dTokyo < -7 && dTokyo > -8.5, dTokyo.toFixed(2));
+    ok('WMM2025: ロンドンは東偏 0.5〜2°', dLondon > 0.5 && dLondon < 2, dLondon.toFixed(2));
+    ok('WMM2025: シドニーは東偏 12〜13.5°', dSyd > 12 && dSyd < 13.5, dSyd.toFixed(2));
+    const v1 = G.vincenty(35, 140, 36, 140);
+    ok('Vincenty: 緯度 1°（35→36°）≈ 110.95 km、方位 0°', near(v1.dist, 110950, 30) && near(v1.az, 0, 1e-6), JSON.stringify(v1));
+    const e = G.geodeticToEcef(35.1, 140.3, 123), g = G.ecefToGeodetic(e);
+    ok('測地⇄ECEF 往復', near(g.lat, 35.1, 1e-9) && near(g.lon, 140.3, 1e-9) && near(g.h, 123, 1e-4), JSON.stringify(g));
+    ok('正規重力 g(35°, 0) ≈ 9.7973', near(G.normalGravity(35, 0), 9.7973, 2e-4), G.normalGravity(35, 0));
+    ok('ISA1976 11 km: T ≈ 216.8 K, p ≈ 22700 Pa', near(G.isa1976(11000).T, 216.77, 0.1) && near(G.isa1976(11000).p, 22700, 50), JSON.stringify(G.isa1976(11000)));
+
+    // ---- physics の追加機能 ----
+    const B = sim1({});
+    ok('既定（追加機能オフ）の頂点高度は従来どおり ≈ 1636 m', near(B.f.apogee_m, 1636, 2), B.f.apogee_m);
+    const R = sim1({ earthRot: true });
+    ok('地球の自転: 頂点の変化は 0.5% 未満', Math.abs(R.f.apogee_m / B.f.apogee_m - 1) < 0.005, R.f.apogee_m);
+    ok('地球の自転: 着地点が変わる（コリオリ）', Math.hypot(R.s.ev.landing.x - B.s.ev.landing.x, R.s.ev.landing.y - B.s.ev.landing.y) > 0.01, `${R.s.ev.landing.x.toFixed(2)},${R.s.ev.landing.y.toFixed(2)}`);
+    const T = sim1({ tipOff: true, lugAft: 50, lugUpper: 900, elev: 80 });
+    ok('ティップオフ: 上側ラグ離脱を記録し、頭下げのピッチレートが出る', T.s.ev.upperLug && T.s.ev.railExit.tipRate > 0 && T.s.ev.railExit.tipAngle > 0, JSON.stringify(T.s.ev.railExit));
+    const T90 = sim1({ tipOff: true, lugAft: 50, lugUpper: 900, elev: 90, wind: 0, gust: 0 });
+    ok('ティップオフ: 鉛直発射ではほぼ回転しない', T90.s.ev.railExit.tipRate < 0.01, T90.s.ev.railExit.tipRate);
+    const P = sim1({ windModel: 'profile', windProfile: '0,0,270\n2000,0,270', gust: 0 }), Z = sim1({ wind: 0, gust: 0 });
+    ok('風プロファイル: 全高度 0 m/s は無風と一致', near(P.s.ev.landing.x, Z.s.ev.landing.x, 1e-6) && near(P.s.ev.landing.y, Z.s.ev.landing.y, 1e-6), `${P.s.ev.landing.x}/${Z.s.ev.landing.x}`);
+    const P2 = sim1({ windModel: 'profile', windProfile: '0,8,270\n3000,8,270', gust: 0 }), W2 = sim1({ wind: 8, windExp: 0, windFrom: 270, gust: 0 });
+    ok('風プロファイル: 一様 8 m/s は α=0 のべき法則と一致', near(P2.s.ev.landing.x, W2.s.ev.landing.x, 1e-6), `${P2.s.ev.landing.x}/${W2.s.ev.landing.x}`);
+    const H = sim1({ windMaxH: 20, gust: 0 }), H0 = sim1({ gust: 0 });
+    ok('べき法則の上限高度: 上空の風が弱まり落下距離が短くなる', H.f.landing_dist_m < H0.f.landing_dist_m, `${H.f.landing_dist_m.toFixed(0)} < ${H0.f.landing_dist_m.toFixed(0)}`);
+    const Mb = buildModel(normalizeCfg({ burnScale: 120 })), M0 = buildModel(normalizeCfg({}));
+    ok('燃焼時間倍率 120%: 作動時間 ×1.2・力積一定', near(Mb.tb, M0.tb * 1.2, 1e-9) && near(Mb.Itot, M0.Itot, 1e-6), `${Mb.tb} ${Mb.Itot}`);
+    const Mc = buildModel(normalizeCfg({ cnaScale: 110, cpShift: 10, cgShift: 20 }));
+    ok('CNα 倍率・CP のずれ', near(Mc.cpAt(0).cna, M0.cpAt(0).cna * 1.1, 1e-9) && near(Mc.cpAt(0).xcp, M0.cpAt(0).xcp + 0.01, 1e-12), `${Mc.cpAt(0).cna} ${Mc.cpAt(0).xcp}`);
+    ok('乾燥重心のずれ 20 mm で重心が後方へ', Mc.massAt(0).cg > M0.massAt(0).cg, `${Mc.massAt(0).cg} > ${M0.massAt(0).cg}`);
+    const D = sim1({ chuteDelay: 1.5 });
+    ok('開傘タイミングのずれ +1.5 s', near(D.s.ev.deploy1.t - D.s.ev.apogee.t, 1.5, 0.004), D.s.ev.deploy1.t - D.s.ev.apogee.t);
+    const Mch = buildModel(normalizeCfg({ chuteScale: 80 }));
+    ok('パラシュート CdS 倍率 80%', near(Mch.c1CdA, M0.c1CdA * 0.8, 1e-12), Mch.c1CdA);
+    const Ma = buildModel(normalizeCfg({ magMode: 'auto', launchDate: '2026-10-11', azimRef: 'magnetic', azim: 0 }));
+    ok('磁気偏角 自動: WMM2025 の値を使い、真方位に反映', near(Ma.magDecl, G.magDecl(35.177228, 140.357056, 10, y), 1e-9) && near(Ma.trueAzim * 180 / Math.PI, (Ma.magDecl + 360) % 360, 1e-9), Ma.magDecl);
+    const Mt = buildModel(normalizeCfg({ landSurface: 'terrain' }));
+    ok('地形モード（データ無し）は射点高さで計算し警告', Mt.groundZ === null && Mt.warn.some(w => /地形データ/.test(w)), Mt.warn.join('|'));
+
+    // ---- 性能閾値 ----
+    const th = Analysis.thresholds(normalizeCfg({ thMinApogee: 2000, thMinRailV: 30 }), B.f);
+    ok('性能閾値: 頂点 2000 m は不合格、ランチクリア 30 m/s は合格', th.length === 2 && !th[0].ok && th[1].ok, JSON.stringify(th));
+
+    // ---- モンテカルロ / ラプラス近似（Web Worker 並列）----
+    const base = normalizeCfg({ gust: 0 }), unc = Object.fromEntries(Analysis.VARS.map(v => [v.k, v.a]));
+    const prog = [];
+    const mc = await Analysis.runMC(base, unc, { n: 120, seed: 3, dist: 'uniform', hard: true, threads: 0 }, (d, n, t) => prog.push(t), { cancel: false });
+    ok('モンテカルロ 120 回: すべて着地', mc.nOk === 120, `${mc.nOk}/${mc.done}（${mc.threads} スレッド、${(mc.ms / 1000).toFixed(1)} s）`);
+    ok('モンテカルロ: 頂点高度の統計（平均は公称 ±5%）', near(mc.stats.apogee.mean, B.f.apogee_m, 0.05 * B.f.apogee_m) && mc.stats.apogee.sd > 0, JSON.stringify(mc.stats.apogee));
+    ok('モンテカルロ: 減速・弾道の 95% 楕円', mc.ell.soft && mc.ell.hard && mc.ell.soft.a95 > 0, `soft ${mc.ell.soft && mc.ell.soft.a95.toFixed(0)} hard ${mc.ell.hard && mc.ell.hard.a95.toFixed(0)}`);
+    const cnaRow = Analysis.VARS.findIndex(v => v.k === 'wind'), dSoft = Analysis.OUTS.findIndex(o => o[0] === 'dSoft');
+    ok('寄与率: 減速落下距離の列は合計 100%', near(mc.contrib.reduce((a, r) => a + r[dSoft], 0), 100, 1e-6), mc.contrib.map(r => r[dSoft].toFixed(1)).join(','));
+    ok('寄与率: 減速落下距離は風速の寄与が最大級', mc.contrib[cnaRow][dSoft] >= Math.max(...mc.contrib.map(r => r[dSoft])) * 0.5, mc.contrib[cnaRow][dSoft].toFixed(1));
+    const mcSame = await Analysis.runMC(base, unc, { n: 20, seed: 3, dist: 'uniform', hard: false, threads: 1 }, () => {}, { cancel: false });
+    const mcPar = await Analysis.runMC(base, unc, { n: 20, seed: 3, dist: 'uniform', hard: false, threads: 4 }, () => {}, { cancel: false });
+    ok('乱数は先に抽選: スレッド数を変えても結果が同じ', mcSame.cases.every((c, i) => c.r.apogee === mcPar.cases[i].r.apogee), `${mcSame.cases[5].r.apogee} / ${mcPar.cases[5].r.apogee}`);
+    const lap = await Analysis.runLaplace(base, unc, { hard: true, threads: 0 }, () => {}, { cancel: false });
+    ok('ラプラス近似: 2n+1 回（13 入力で 27 回）', lap.evals === 27, lap.evals);
+    const ks = lap.kinds.soft, em = mc.ell.soft;
+    ok('ラプラス近似: 減速落下の 95% 楕円がモンテカルロと同程度（長径比 0.6〜1.6）', ks && em && ks.a95 / em.a95 > 0.6 && ks.a95 / em.a95 < 1.6, `Lap ${ks && ks.a95.toFixed(0)} / MC ${em && em.a95.toFixed(0)}`);
+    ok('ラプラス近似: 寄与率の合計 100%', ks && near(ks.grads.reduce((a, g) => a + g.share, 0), 100, 1e-6), ks && ks.grads.map(g => g.k + ':' + g.share.toFixed(0)).join(' '));
+
+    // ---- EKF ----
+    const ek = Analysis.runEKF(B.M, B.s, { imuHz: 100, accNoise: 0.2, accBias: 0.08, accRange: 16, gpsHz: 10, gpsSigma: 2.5, gpsVSigma: 0.3, gpsMaxV: 515, gpsMaxAlt: 18000, baroHz: 25, baroSigma: 20, baroBias: 30, seed: 7 });
+    ok('EKF: 位置誤差 RMS が 10 m 未満', ek.rms3 < 10, ek.rms3);
+    ok('EKF: IMU のみ（補正なし）より大幅に良い', ek.rms3 < ek.rmsImu / 3, `${ek.rms3.toFixed(2)} vs IMU ${ek.rmsImu.toFixed(1)}`);
+    ok('EKF: 平均 NEES/3 が 0.2〜5（フィルタの整合）', ek.neesMean > 0.2 && ek.neesMean < 5, ek.neesMean);
+    const ekNoGps = Analysis.runEKF(B.M, B.s, { imuHz: 100, accNoise: 0.2, accBias: 0.08, accRange: 16, gpsHz: 10, gpsSigma: 2.5, gpsVSigma: 0.3, gpsMaxV: 515, gpsMaxAlt: 50, baroHz: 25, baroSigma: 20, baroBias: 30, seed: 7 });
+    ok('EKF: GPS 無効区間（高度 50 m 超）でも気圧計で推定が続く', ekNoGps.nGD > 0 && Number.isFinite(ekNoGps.rmsNoGps), `${ekNoGps.nGD} 回無効, RMS ${ekNoGps.rmsNoGps.toFixed(1)}`);
+
+    // ---- KML ----
+    const kml = Analysis.flightKml(B.M, B.s), doc = new DOMParser().parseFromString(kml, 'application/xml');
+    ok('KML: XML として正しく、追従ツアーとイベントを含む', !doc.querySelector('parsererror') && /gx:Tour/.test(kml) && /頂点/.test(kml), kml.length + ' 文字');
+
+    // ---- 検算 ----
+    const vr = Verify.run(normalizeCfg({}));
+    ok('検算（既定機体）: 不合格 0', vr.n.fail === 0, `合格 ${vr.n.pass} 注意 ${vr.n.warn} 不合格 ${vr.n.fail}: ` + vr.items.filter(i => i.st !== 'pass' && i.st !== 'info').map(i => i.title + ' ' + i.diff).join(' / '));
+    const vd = Verify.run(normalizeCfg({ ...(window.SpecSheet ? SpecSheet.DEBUG_PRESET : {}), magDecl: -7.6 }));
+    ok('検算（Debug 相当）: 例外なく実行', vd.items.length > 10, `合格 ${vd.n.pass} 注意 ${vd.n.warn} 不合格 ${vd.n.fail}`);
+
+    // ---- 設計ツール ----
+    cfg = normalizeCfg({}); model = buildModel(cfg);
+    const ctx = Design.context(cfg, model, { state: 'wet', E: 20, nu: 0.3, rho: 1800, V: 250, alt: 0, replaceFinMass: false });
+    const mm = 1e-3, ev = Design.evaluate(ctx, { cr: cfg.finCr * mm, ct: cfg.finCt * mm, sw: cfg.finSweep * mm, sp: cfg.finSpan * mm, af: cfg.finAft * mm });
+    ok('設計: 現在のフィンの CNα が Barrowman（physics）と一致', near(ev.cna, model.cpAt(0).cna, 1e-9), `${ev.cna} / ${model.cpAt(0).cna}`);
+    ok('設計: フラッター速度が求まる', ev.flutter > 0, ev.flutter);
+    const opt = await Design.optimize(ctx, { fstTarget: 15, fstMin: 0, fstMax: 0, V: 250, step: 1, nSamples: 6000, crMin: 100, crMax: 250, ctMin: 30, ctMax: 150, swMin: 0, swMax: 200, spMin: 50, spMax: 180, afMin: 0, afMax: 30 }, () => {}, { cancel: false });
+    ok('設計: 最適化で Fst 15% の ±1 以内', opt && Math.abs(opt.e.fst - 15) < 1, opt && opt.e.fst);
+    const ch = Design.chute({ pdMass: 6.132, pdV: 8.08, pdCd: 0.8, pdRho: 1.2, pdG: 9.81, pdGores: 8, pdSpill: 0.1, pdLine: 1 });
+    ok('設計: パラシュート CdS = 2mg/(ρv²)（諸元表の 1段目 CdS 1.5357 と一致）', near(ch.cds, 1.53567, 1e-4), ch.cds);
+  } catch (e) { ok('例外', false, e.stack || e); }
+  document.getElementById('tbl').innerHTML = rows.join('');
+  document.getElementById('result').textContent = `PASS ${pass} / FAIL ${fail}`;
+})();
+</script>
+</body></html>

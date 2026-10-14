@@ -47,9 +47,12 @@
       <button data-tab="3d" class="on">3D</button>
       <button data-tab="flight">飛行軌跡</button>
       <button data-tab="charts">グラフ</button>
-      <button data-tab="mc">着地分散</button>
-      <button data-tab="sweep">パラメータ掃引</button>
+      <button data-tab="mc">モンテカルロ</button>
       <button data-tab="disp">落下分散</button>
+      <button data-tab="sweep">パラメータ掃引</button>
+      <button data-tab="ekf">EKF</button>
+      <button data-tab="verify">検算</button>
+      <button data-tab="design">設計</button>
     </nav>
 
     <div id="playerCard" class="card player-card">
@@ -89,7 +92,7 @@
 
     <section id="tab-flight" class="tab">
       <div class="card">
-        <div class="card-h">側面図（打上げ方位方向の距離 × 高度）</div>
+        <div class="row" style="justify-content:space-between"><div class="card-h">側面図（打上げ方位方向の距離 × 高度）</div><button id="btnKml" title="速度で色分けした軌道・イベント・追従ツアー">Google Earth 用 KML</button></div>
         <canvas id="cvSide" class="tall"></canvas>
       </div>
       <div class="card">
@@ -102,16 +105,10 @@
       <div id="charts" class="chart-grid"></div>
     </section>
 
-    <section id="tab-mc" class="tab">
-      <div class="card">
-        <div class="card-h">モンテカルロ解析（ばらつきを与えて多数回飛ばす）</div>
-        <div id="mcForm" class="fields mini"></div>
-        <div class="row"><button id="btnMc" class="primary">実行</button><span id="mcProg" class="muted"></span></div>
-        <canvas id="cvMcMap" class="tall"></canvas>
-        <canvas id="cvMcHist"></canvas>
-        <div id="mcStats" class="kv"></div>
-      </div>
-    </section>
+    <section id="tab-mc" class="tab"></section>
+    <section id="tab-ekf" class="tab"></section>
+    <section id="tab-verify" class="tab"></section>
+    <section id="tab-design" class="tab"></section>
 
     <section id="tab-sweep" class="tab">
       <div class="card">
@@ -140,9 +137,14 @@
 
 <script src="https://cdnjs.cloudflare.com/ajax/libs/three.js/r128/three.min.js"></script>
 <script src="https://cdn.jsdelivr.net/npm/three@0.128.0/examples/js/controls/OrbitControls.js"></script>
+<script src="geo.js"></script>
+<script src="terrain.js"></script>
 <script src="physics.js"></script>
 <script src="specsheet.js"></script>
 <script src="dispersion.js"></script>
+<script src="analysis.js"></script>
+<script src="verify.js"></script>
+<script src="design.js"></script>
 <script src="app.js"></script>
 <script src="view3d.js"></script>
 </body>

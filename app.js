@@ -450,7 +450,7 @@ function renderMotorInfo() {
   const M = model, el = $('#motorInfo'); if (!M || !el) return;
   const avg = M.tb > 0 ? M.Itot / M.tb : 0, peak = Math.max(...M.pts.map(p => p[1]));
   const tw = peak / (M.massAt(0).m * G0), twAvg = avg / (M.massAt(0).m * G0);
-  el.innerHTML = `<b>${motorClass(M.Itot)}</b> クラス${M.mName ? '（' + M.mName + '）' : ''} ／ 総力積 <b>${M.Itot.toFixed(1)}</b> N·s ／ 燃焼 <b>${M.tb.toFixed(2)}</b> s<br>
+  el.innerHTML = `<b>${motorClass(M.Itot)}</b> クラス${M.mName ? '（' + escHtml(M.mName) + '）' : ''} ／ 総力積 <b>${M.Itot.toFixed(1)}</b> N·s ／ 燃焼 <b>${M.tb.toFixed(2)}</b> s<br>
     平均 <b>${avg.toFixed(0)}</b> N・最大 <b>${peak.toFixed(0)}</b> N ／ 推力重量比 平均 <b>${twAvg.toFixed(1)}</b>・最大 <b>${tw.toFixed(1)}</b>`;
 }
 
@@ -1010,7 +1010,7 @@ function init() {
   const mountTab = (mod, fn, sel, name) => {
     const el = $(sel); if (!el) return;
     if (!window[mod]) { el.innerHTML = `<div class="card"><p class="muted">${name}を読み込めませんでした。</p></div>`; return; }
-    try { window[mod][fn](el); } catch (e) { console.error(e); el.innerHTML = `<div class="card"><p class="muted">${name}の初期化に失敗しました: ${e.message}</p></div>`; }
+    try { window[mod][fn](el); } catch (e) { console.error(e); el.innerHTML = `<div class="card"><p class="muted">${name}の初期化に失敗しました: ${escHtml(e.message)}</p></div>`; }
   };
   mountTab('Analysis', 'mountMc', '#tab-mc', 'analysis.js（モンテカルロ・ラプラス近似）');
   mountTab('Analysis', 'mountEkf', '#tab-ekf', 'analysis.js（EKF）');
@@ -1019,7 +1019,7 @@ function init() {
   initTerrain();
   if (window.Dispersion) {
     try { window.Dispersion.mount($('#dispersion')); }
-    catch (e) { console.error(e); $('#dispersion').innerHTML = `<p class="muted">落下分散の初期化に失敗しました: ${e.message}</p>`; }
+    catch (e) { console.error(e); $('#dispersion').innerHTML = `<p class="muted">落下分散の初期化に失敗しました: ${escHtml(e.message)}</p>`; }
   } else $('#dispersion').innerHTML = '<p class="muted">dispersion.js を読み込めませんでした（落下分散は使えません）。</p>';
   initSpecButtons();
   $$('.tabs button').forEach(b => b.addEventListener('click', () => {

@@ -45,7 +45,8 @@
     const src = await (await fetch('../specsheet.js')).text();
     T('トップレベルの const/let/function 宣言が無い', !/^(const|let|var|function|class|async)\s/m.test(src));
     T('読込時に SheetJS を読まない（遅延読込 §0.4）', !window.XLSX && !document.querySelector('script[src*="xlsx"]'));
-    T('SheetJS の URL は §0.4 の固定 URL', src.includes("'https://cdnjs.cloudflare.com/ajax/libs/xlsx/0.18.5/xlsx.full.min.js'"));
+    T('SheetJS の URL は §0.4 の固定 URL', src.includes("'https://cdn.jsdelivr.net/npm/xlsx@0.18.5/dist/xlsx.full.min.js'"));
+    T('SheetJS は SRI（integrity + crossOrigin）付きで読む', /XLSX_SRI = 'sha384-[A-Za-z0-9+/]{64}'/.test(src) && /s\.integrity = XLSX_SRI; s\.crossOrigin = 'anonymous'/.test(src));
     const fm = SS.fieldMap;
     T('fieldMap の形 {item, subItem, key, unit, conv}', fm.every(f => typeof f.item === 'string' && typeof f.subItem === 'string' && typeof f.key === 'string' && typeof f.unit === 'string' && [null, 'aft', 'kg', 'invN'].includes(f.conv)));
     const byConv = c => fm.filter(f => f.conv === c).map(f => f.key).sort().join();

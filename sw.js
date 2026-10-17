@@ -1,4 +1,4 @@
-const CACHE = 'student-rocket-sim-v4';
+const CACHE = 'student-rocket-sim-v5';
 const FILES = ['./', 'index.html', 'style.css', 'geo.js','terrain.js','physics.js','analysis.js','analysis-worker.js','verify.js','design.js', 'specsheet.js', 'dispersion.js', 'app.js', 'view3d.js', 'manifest.webmanifest', 'icons/icon.svg'];
 self.addEventListener('install', e => { e.waitUntil(caches.open(CACHE).then(c => c.addAll(FILES))); self.skipWaiting(); });
 self.addEventListener('activate', e => {

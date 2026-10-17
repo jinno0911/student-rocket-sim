@@ -6,8 +6,9 @@
  */
 window.Dispersion = (() => {
   const LS_KEY = 'student-rocket-sim:disp';
-  const LEAFLET_JS = 'https://cdnjs.cloudflare.com/ajax/libs/leaflet/1.9.4/leaflet.min.js';
-  const LEAFLET_CSS = 'https://cdnjs.cloudflare.com/ajax/libs/leaflet/1.9.4/leaflet.min.css';
+  const LEAFLET_JS = 'https://cdn.jsdelivr.net/npm/leaflet@1.9.4/dist/leaflet.js';
+  const LEAFLET_CSS = 'https://cdn.jsdelivr.net/npm/leaflet@1.9.4/dist/leaflet.css';
+  const LEAFLET_SRI = { js: 'sha384-cxOPjt7s7Iz04uaHJceBmS+qpjv2JkIHNVcuOrM+YHwZOmJGBXI00mdUXEq65HTH', css: 'sha384-sHL9NAb7lN7rfvG5lfHpm643Xkcjzp4jFvuavGOndn6pjVqS6ny56CAt3nsEVT4H' };   // npm leaflet@1.9.4 の同ファイル（§0.4）
   const ASSUMED = '推力履歴は仮定（Isp 170 s）。審査提出には地上燃焼試験の推力履歴を使用すること';
   const MODES = ['ballistic', 'recovery', 'payload'];
   const MODE_L = { ballistic: '弾道落下', recovery: '減速落下', payload: 'ペイロード' };
@@ -685,8 +686,8 @@ window.Dispersion = (() => {
     leafletP = new Promise(done => {
       if (leafletOff) return done(false);
       if (window.L?.map) return done(true);
-      if (!document.querySelector(`link[href="${LEAFLET_CSS}"]`)) { const l = document.createElement('link'); l.rel = 'stylesheet'; l.href = LEAFLET_CSS; document.head.appendChild(l); }
-      const s = document.createElement('script'); s.src = LEAFLET_JS; s.async = true;
+      if (!document.querySelector(`link[href="${LEAFLET_CSS}"]`)) { const l = document.createElement('link'); l.rel = 'stylesheet'; l.href = LEAFLET_CSS; l.integrity = LEAFLET_SRI.css; l.crossOrigin = 'anonymous'; document.head.appendChild(l); }
+      const s = document.createElement('script'); s.src = LEAFLET_JS; s.integrity = LEAFLET_SRI.js; s.crossOrigin = 'anonymous'; s.async = true;
       s.onload = () => done(!!window.L?.map); s.onerror = () => done(false);
       setTimeout(() => done(!!window.L?.map), 15000);
       document.head.appendChild(s);

@@ -5,7 +5,8 @@
  * cfg の位置は先端基準 mm、諸元表は後端基準（x_nose = L − x_aft）。質量は cfg が g、諸元表が kg。
  */
 window.SpecSheet = (() => {
-  const XLSX_URL = 'https://cdnjs.cloudflare.com/ajax/libs/xlsx/0.18.5/xlsx.full.min.js';
+  const XLSX_URL = 'https://cdn.jsdelivr.net/npm/xlsx@0.18.5/dist/xlsx.full.min.js';
+  const XLSX_SRI = 'sha384-vtjasyidUo0kW94K5MXDXntzOJpQgBKXmE7e2Ga4LG0skTTLeBi97eFAXsqewJjw';   // npm xlsx@0.18.5 の同ファイル（§0.4）
   const SHEET_IN = '団体入力シート', SHEET_EXTRA = 'シミュレータ追加諸元', SHEET_THRUST = '推力履歴';
   const ISP = 170, g0 = 9.80665;   // 仮定推力の比推力 [s] / 標準重力（physics の G0 と同じ値）
   const ASSUMED_NOTE = '推力履歴は仮定（Isp 170 s）。審査提出には地上燃焼試験の推力履歴を使用すること';
@@ -18,7 +19,7 @@ window.SpecSheet = (() => {
     return xlsxP || (xlsxP = new Promise((res, rej) => {
       const s = document.createElement('script');
       const fail = () => { xlsxP = null; s.remove(); rej(jpErr('SheetJS（xlsx ライブラリ）を読み込めませんでした。ネットワーク接続を確認してください')); };
-      s.src = XLSX_URL; s.async = true;
+      s.src = XLSX_URL; s.integrity = XLSX_SRI; s.crossOrigin = 'anonymous'; s.async = true;
       s.onload = () => window.XLSX?.read ? res(window.XLSX) : fail();
       s.onerror = fail;
       document.head.appendChild(s);

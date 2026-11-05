@@ -39,6 +39,11 @@ const near = (a, b, tol) => Number.isFinite(a) && Math.abs(a - b) <= tol;
     ok('既定設定: 偏角の注意が出ない', !/磁気偏角/.test(A.w.document.getElementById('warnings').innerText));
     ok('window.V3D / SpecSheet / Dispersion が公開されている', A.ev('!!(window.V3D && window.SpecSheet && window.Dispersion)'));
     A.ev('window.V3D.markDirty()'); ok('V3D.markDirty は例外を出さない', true);
+    // .eng ヘッダのモーター名は HTML として解釈しない（XSS 対策）
+    A.ev(`applyCfg({...DEFAULTS, motorSrc: 'eng', engText: DEFAULTS.engText.replace(/^SAMPLE /m, '<img/src=x/onerror=window.__xss=1> ')}); runNominal()`);
+    const mi = A.w.document.getElementById('motorInfo');
+    ok('.eng のモーター名はエスケープして表示', mi && !mi.querySelector('img') && /<img\/src=x/.test(mi.textContent), mi && mi.innerHTML);
+    A.ev('applyCfg({...DEFAULTS}); runNominal()');
 
     // 2) Debug 諸元
     A.ev('applyCfg({...DEFAULTS, ...SpecSheet.DEBUG_PRESET}); runNominal()');

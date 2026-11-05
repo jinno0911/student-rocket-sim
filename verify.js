@@ -7,7 +7,7 @@ window.Verify = (() => {
   const ST = { pass: ['合格', '#7ee787'], warn: ['注意', '#ffd36b'], fail: ['不合格', '#ff6b8b'], info: ['参考', '#8c9bbd'] };
   const fin = v => typeof v === 'number' && Number.isFinite(v);
   const f = (v, d = 3) => (fin(v) ? (+v.toPrecision(d + 3)).toString() : '—');
-  const esc = s => String(s).replace(/[&<>]/g, c => ({ '&': '&amp;', '<': '&lt;', '>': '&gt;' }[c]));
+  const esc = s => String(s).replace(/[&<>"]/g, c => ({ '&': '&amp;', '<': '&lt;', '>': '&gt;', '"': '&quot;' }[c]));
 
   function run(base) {
     const items = [], t0 = performance.now();

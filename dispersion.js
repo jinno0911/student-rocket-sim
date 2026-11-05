@@ -9,9 +9,9 @@ window.Dispersion = (() => {
   const LEAFLET_JS = 'https://cdnjs.cloudflare.com/ajax/libs/leaflet/1.9.4/leaflet.min.js';
   const LEAFLET_CSS = 'https://cdnjs.cloudflare.com/ajax/libs/leaflet/1.9.4/leaflet.min.css';
   const ASSUMED = '推力履歴は仮定（Isp 170 s）。審査提出には地上燃焼試験の推力履歴を使用すること';
-  const MODES = ['ballistic', 'recovery', 'payload'];
-  const MODE_L = { ballistic: '弾道落下', recovery: '減速落下', payload: 'ペイロード' };
-  const DASH = { ballistic: [9, 6], recovery: [], payload: [2, 5] };   // 破線 / 実線 / 点線
+  const MODES = ['ballistic', 'recovery', 'payload', 'stage1', 'stage2'];
+  const MODE_L = { ballistic: '弾道落下', recovery: '減速落下', payload: 'ペイロード', stage1: '1段目落下', stage2: '2段目落下' };
+  const DASH = { ballistic: [9, 6], recovery: [], payload: [2, 5], stage1: [12, 4, 2, 4], stage2: [12, 4, 2, 4] };   // 破線 / 実線 / 点線
   const CSV_H = 'mode,elev_deg,wind_mps,wind_from_true_deg,wind_from_mag_deg,east_m,north_m,lat,lon,dist_m,t_s,v_mps,vz_mps,apogee_m,apogee_t_s,railExit_V_mps,deploy1_dtApo_s,deploy2_dtApo_s,payload_dtApo_s,deploy1_Va_mps,payload_Va_mps,ok';
   const GNG_H = 'elev_deg,wind_from_deg,dir_ref,allowed_max_mps,limiting_mode,limiting_wind_mps';
   const OPT0 = { speeds: '1,2,3,4,5,6,7', nDir: 16, tBal: true, tRec: true, tPay: true, land: 'cfg', elevs: '', zones: [], margin: 0 };
@@ -159,6 +159,10 @@ window.Dispersion = (() => {
       const P = sim?.payload, L = P?.landing;
       out.push(mk('payload', L, err || (P?.error ? String(P.error) : '') || (P ? '' : '放出されませんでした'), fs.payloadLanding_dist_m, NaN, NaN, fs.payloadLanding_vz_mps));
     }
+    if (!ballistic) for (const no of [1, 2]) if (tg['stage' + no]) { // 切り離した段の落下点
+      const d = (sim?.drops || []).find(q => q.stage === no), L = d?.landing;
+      out.push(mk('stage' + no, L, err || (d ? d.error || '' : '分離していません'), NaN, L?.t, L?.V, L?.vz));
+    }
     return out;
   }
 
@@ -170,13 +174,13 @@ window.Dispersion = (() => {
     const base = norm(c0);
     const speeds = parseSpeeds(opt.speeds), dirs = dirList(opt.nDir), elevs = parseElevs(opt.elevs, +base.elev);
     const dirRef = base.windDirRef === 'magnetic' ? 'magnetic' : 'true', decl = +base.magDecl || 0;
-    const tg = { ballistic: opt.tBal, recovery: opt.tRec, payload: opt.tPay && !!base.payloadOn };
+    const tg = { ballistic: opt.tBal, recovery: opt.tRec, payload: opt.tPay && !!base.payloadOn, stage1: +base.stageCount >= 2, stage2: +base.stageCount >= 3 };
     if (!tg.ballistic && !tg.recovery && !tg.payload) { msg('対象を 1 つ以上選んでください'); return; }
     const land = opt.land === 'site' || opt.land === 'sea' ? opt.land : (base.landSurface || 'site');
     const lat0 = fin(+base.lat) ? +base.lat : 0, lon0 = fin(+base.lon) ? +base.lon : 0;
     const jobs = [];
     elevs.forEach((elev, ei) => speeds.forEach((s, si) => { for (let di = 0; di < (s === 0 ? 1 : dirs.length); di++) jobs.push({ ei, elev, si, s, di }); }));
-    const perJob = (tg.ballistic ? 1 : 0) + (tg.recovery || tg.payload ? 1 : 0), nRun = jobs.length * perJob;
+    const perJob = (tg.ballistic ? 1 : 0) + (tg.recovery || tg.payload || tg.stage1 ? 1 : 0), nRun = jobs.length * perJob;
     const stale0 = stale;
     busy = true; cancelReq = false; stale = false; setBusy(true); progress(0, nRun);
     const rows = [], t00 = performance.now();
@@ -188,7 +192,7 @@ window.Dispersion = (() => {
         const c = { ...base, elev: j.elev, landSurface: land }, wind = { speed: j.s, from };
         const add = list => { for (const r of list) { Object.assign(r, { ei: j.ei, elev: j.elev, si: j.si, s: j.s, di: j.di, from, fromTrue, fromMag }); const ll = r.landed ? toLL(lat0, lon0, r.x, r.y) : [NaN, NaN]; r.lat = ll[0]; r.lon = ll[1]; rows.push(r); } };
         if (tg.ballistic) { add(runOne(c, wind, true, tg)); done++; }
-        if (tg.recovery || tg.payload) { add(runOne(c, wind, false, tg)); done++; }
+        if (tg.recovery || tg.payload || tg.stage1) { add(runOne(c, wind, false, tg)); done++; }
         // 40 ms か 8 件ごとに譲る（仮想時間のヘッドレスでも中止が効くよう件数でも区切る）
         if (performance.now() - t0 > 40 || ++k >= 8) { progress(done, nRun); await tick(); t0 = performance.now(); k = 0; }
         if (cancelReq) break;
@@ -477,7 +481,7 @@ window.Dispersion = (() => {
   function updateHint() {
     if (!root) return;
     const b = curBase(), sp = parseSpeeds(opt.speeds), el = parseElevs(opt.elevs, b ? +b.elev : NaN);
-    const nT = (opt.tBal ? 1 : 0) + (opt.tRec || (opt.tPay && b?.payloadOn) ? 1 : 0);
+    const nT = (opt.tBal ? 1 : 0) + (opt.tRec || (opt.tPay && b?.payloadOn) || +b?.stageCount >= 2 ? 1 : 0);
     const n = el.length * (1 + (sp.length - 1) * opt.nDir) * nT;
     q('.disp-spdhint').textContent = `計算する風速: ${sp.join(', ')} m/s（0 m/s は 1 点）× ${opt.nDir} 方位 × 射角 ${el.map(v => fin(v) ? v + '°' : '設定値').join('・')} → ${n} 回`;
   }

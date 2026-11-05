@@ -27,9 +27,9 @@ window.Analysis = (() => {
   ];
   const OUTS = [
     ['apogee', '頂点高度', 'm'], ['railV', 'ランチクリア速度', 'm/s'], ['maxV', '最大速度', 'm/s'], ['maxMach', '最大マッハ数', '-'],
-    ['maxQ', '最大動圧', 'Pa'], ['dSoft', '減速落下 距離', 'm'], ['dHard', '弾道落下 距離', 'm'], ['dPay', 'ペイロード 距離', 'm'],
+    ['maxQ', '最大動圧', 'Pa'], ['dSoft', '減速落下 距離', 'm'], ['dHard', '弾道落下 距離', 'm'], ['dPay', 'ペイロード 距離', 'm'], ['dB1', '1段目落下 距離', 'm'], ['dB2', '2段目落下 距離', 'm'],
   ];
-  const KINDS = [['soft', '減速落下', '#4fc3f7'], ['hard', '弾道落下', '#ff6b8b'], ['pay', 'ペイロード', '#c58bff']];
+  const KINDS = [['soft', '減速落下', '#4fc3f7'], ['hard', '弾道落下', '#ff6b8b'], ['pay', 'ペイロード', '#c58bff'], ['b1', '1段目落下', '#7fc4d9'], ['b2', '2段目落下', '#7ee787']];
   const UNC_KEY = 'student-rocket-sim:unc';
 
   // ---------------- 小道具 ----------------
@@ -75,6 +75,7 @@ window.Analysis = (() => {
   }
 
   // ---------------- 1 ケースの計算（analysis-worker.js と同じ内容） ----------------
+  const dropXY = (s, no) => { const d = (s.drops || []).find(q => q.stage === no); return d && d.landing ? [d.landing.x, d.landing.y] : null; };
   function runCase(cfg, hard) {
     const M = buildModel(cfg), s = simulate(M, { seed: cfg.__seed || 1, record: false });
     const f = flightSummary(M, s), L = s.ev.landing, P = s.payload && s.payload.landing;
@@ -82,6 +83,7 @@ window.Analysis = (() => {
       ok: !s.ev.error && !!L, err: s.ev.error || null,
       apogee: f.apogee_m, railV: f.railExit_V_mps, maxV: f.maxV_mps, maxMach: f.maxMach, maxQ: f.maxQ_Pa, apoT: f.apogee_t_s,
       soft: L ? [L.x, L.y] : null, pay: P ? [P.x, P.y] : null, hard: null,
+      b1: dropXY(s, 1), b2: dropXY(s, 2),
     };
     if (hard) {
       const sh = simulate(M, { seed: cfg.__seed || 1, record: false, ballistic: true });
@@ -89,7 +91,7 @@ window.Analysis = (() => {
     }
     return r;
   }
-  const outVal = (r, k) => (k === 'dSoft' ? (r.soft ? Math.hypot(...r.soft) : NaN) : k === 'dHard' ? (r.hard ? Math.hypot(...r.hard) : NaN) : k === 'dPay' ? (r.pay ? Math.hypot(...r.pay) : NaN) : r[k]);
+  const outVal = (r, k) => (k === 'dSoft' ? (r.soft ? Math.hypot(...r.soft) : NaN) : k === 'dHard' ? (r.hard ? Math.hypot(...r.hard) : NaN) : k === 'dPay' ? (r.pay ? Math.hypot(...r.pay) : NaN) : k === 'dB1' ? (r.b1 ? Math.hypot(...r.b1) : NaN) : k === 'dB2' ? (r.b2 ? Math.hypot(...r.b2) : NaN) : r[k]);
 
   // ---------------- 並列実行（Web Worker。使えない・地形モードのときは本スレッドで分割実行） ----------------
   let pool = null;
@@ -198,7 +200,7 @@ window.Analysis = (() => {
     ['thMinApogee', '最低頂点高度', 'm', r => r.apogee, (v, l) => v >= l],
     ['thMaxQ', '最大動圧の上限', 'Pa', r => r.maxQ, (v, l) => v <= l],
     ['thMinRailV', '最低ランチクリア速度', 'm/s', r => r.railV, (v, l) => v >= l],
-    ['thMaxRange', '着地点距離の上限', 'm', r => Math.max(...['soft', 'hard', 'pay'].map(k => (r[k] ? Math.hypot(...r[k]) : 0))), (v, l) => v <= l],
+    ['thMaxRange', '着地点距離の上限', 'm', r => Math.max(...['soft', 'hard', 'pay', 'b1', 'b2'].map(k => (r[k] ? Math.hypot(...r[k]) : 0))), (v, l) => v <= l],
   ];
   // 公称 1 ケース（flightSummary から）の判定
   function thresholds(c, fs) {
@@ -326,6 +328,9 @@ window.Analysis = (() => {
     if (ev.landing) pins += `<Placemark><name>着地</name><styleUrl>#land</styleUrl><Point><coordinates>${ll(ev.landing.x, ev.landing.y, ev.landing.z || 0)}</coordinates></Point></Placemark>`;
     const P = sim.payload;
     const payLine = P && P.rec && P.rec.length > 1 ? `<Placemark><name>ペイロード</name><styleUrl>#pay</styleUrl><LineString><altitudeMode>absolute</altitudeMode><coordinates>${P.rec.map(r => ll(r.x, r.y, r.z)).join(' ')}</coordinates></LineString></Placemark>` : '';
+    const dropsKml = (sim.drops || []).map(d => (d.rec.length > 1 ? `<Placemark><name>${d.stage}段目 落下</name><styleUrl>#pay</styleUrl><LineString><altitudeMode>absolute</altitudeMode><coordinates>${d.rec.map(r => ll(r.x, r.y, r.z)).join(' ')}</coordinates></LineString></Placemark>` : '')
+      + (d.landing ? `<Placemark><name>${d.stage}段目 着地</name><styleUrl>#land</styleUrl><Point><coordinates>${ll(d.landing.x, d.landing.y, 0)}</coordinates></Point></Placemark>` : '')).join('');
+    for (const e of ev.stages || []) { if (e.sep) pins += pin(`${e.stage}段目 分離`, e.sep.t); if (e.stage > 1 && e.ign) pins += pin(`${e.stage}段目 点火`, e.ign.t); }
     const shadow = `<Placemark><name>地上の影</name><styleUrl>#shadow</styleUrl><LineString><altitudeMode>clampToGround</altitudeMode><coordinates>${rec.filter((_, i) => i % 3 === 0).map(r => ll(r.x, r.y, 0)).join(' ')}</coordinates></LineString></Placemark>`;
     // 追従ツアー: 全景 → 離昇 → 頂点 → 着地 → 全景
     const look = (r, range, tilt, dur, heading) => `<gx:FlyTo><gx:duration>${dur}</gx:duration><gx:flyToMode>smooth</gx:flyToMode><LookAt><longitude>${ll(r.x, r.y, r.z).split(',')[0]}</longitude><latitude>${ll(r.x, r.y, r.z).split(',')[1]}</latitude><altitude>${Math.max(h0 + r.z, 0).toFixed(1)}</altitude><heading>${heading}</heading><tilt>${tilt}</tilt><range>${range}</range><altitudeMode>absolute</altitudeMode></LookAt></gx:FlyTo>`;
@@ -337,7 +342,7 @@ window.Analysis = (() => {
 ${styles}<Style id="pin"><IconStyle><scale>0.9</scale><Icon><href>http://maps.google.com/mapfiles/kml/paddle/ylw-circle.png</href></Icon></IconStyle></Style>
 <Style id="land"><IconStyle><Icon><href>http://maps.google.com/mapfiles/kml/shapes/target.png</href></Icon></IconStyle></Style>
 <Style id="pay"><LineStyle><color>ffff8bc5</color><width>3</width></LineStyle></Style><Style id="shadow"><LineStyle><color>66000000</color><width>3</width></LineStyle></Style>
-${tour}<Folder><name>軌道（速度で色分け）</name>${segs}</Folder>${payLine}${shadow}<Folder><name>イベント</name>${pins}
+${tour}<Folder><name>軌道（速度で色分け）</name>${segs}</Folder>${payLine}${dropsKml}${shadow}<Folder><name>イベント</name>${pins}
 <Placemark><name>射点</name><Point><coordinates>${c.lon},${c.lat},0</coordinates></Point></Placemark></Folder></Document></kml>`;
   }
 
@@ -436,8 +441,8 @@ ${tour}<Folder><name>軌道（速度で色分け）</name>${segs}</Folder>${payL
     const out = el.querySelector('#anOut'); out.innerHTML = o.join('');
     const b = out.querySelector('#anCsv');
     if (b) b.addEventListener('click', () => {
-      const head = ['run', ...VARS.map(v => `${v.k}_${v.u}`), 'ok', 'apogee_m', 'railV_mps', 'maxV_mps', 'maxMach', 'maxQ_Pa', 'soft_e', 'soft_n', 'hard_e', 'hard_n', 'pay_e', 'pay_n'];
-      const lines = mcRes.cases.map((c, i) => [i + 1, ...c.x.map(v => +v.toFixed(5)), c.r.ok ? 1 : 0, c.r.apogee, c.r.railV, c.r.maxV, c.r.maxMach, c.r.maxQ, ...(c.r.soft || ['', '']), ...(c.r.hard || ['', '']), ...(c.r.pay || ['', ''])].map(v => (typeof v === 'number' ? +v.toFixed(3) : v)).join(','));
+      const head = ['run', ...VARS.map(v => `${v.k}_${v.u}`), 'ok', 'apogee_m', 'railV_mps', 'maxV_mps', 'maxMach', 'maxQ_Pa', 'soft_e', 'soft_n', 'hard_e', 'hard_n', 'pay_e', 'pay_n', 'b1_e', 'b1_n', 'b2_e', 'b2_n'];
+      const lines = mcRes.cases.map((c, i) => [i + 1, ...c.x.map(v => +v.toFixed(5)), c.r.ok ? 1 : 0, c.r.apogee, c.r.railV, c.r.maxV, c.r.maxMach, c.r.maxQ, ...(c.r.soft || ['', '']), ...(c.r.hard || ['', '']), ...(c.r.pay || ['', '']), ...(c.r.b1 || ['', '']), ...(c.r.b2 || ['', ''])].map(v => (typeof v === 'number' ? +v.toFixed(3) : v)).join(','));
       download('montecarlo.csv', [head.join(','), ...lines].join('\n'), 'text/csv');
     });
   }

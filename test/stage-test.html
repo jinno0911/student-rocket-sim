@@ -1,0 +1,129 @@
+<!doctype html>
+<html lang="ja"><head><meta charset="utf-8"><title>多段式テスト</title>
+<style>body{font:13px system-ui;margin:12px}td{padding:2px 6px;border-bottom:1px solid #ddd;vertical-align:top}.PASS{color:#080}.FAIL{color:#c00;font-weight:700}iframe{width:1200px;height:800px;border:1px solid #888}</style></head>
+<body>
+<h1>多段式のテスト</h1>
+<p><code>bash test/headless.sh http://localhost:8775/test/stage-test.html 120000</code></p>
+<pre id="result">running…</pre><table id="tbl"></table>
+<script src="../geo.js"></script><script src="../physics.js"></script>
+<script>
+var cfg = normalizeCfg({}), model = null, sim = null; function download() {}
+window.ANALYSIS_NO_WORKER = true;
+</script>
+<script src="../analysis.js"></script><script src="../verify.js"></script>
+<script>
+const rows = []; let pass = 0, fail = 0;
+const ok = (name, cond, val = '') => { cond ? pass++ : fail++; rows.push(`<tr><td class="${cond ? 'PASS' : 'FAIL'}">${cond ? 'PASS' : 'FAIL'}</td><td>${name}</td><td>${String(val).slice(0, 300)}</td></tr>`); };
+const near = (a, b, tol) => Number.isFinite(a) && Math.abs(a - b) <= tol;
+const run = (p, o = {}) => { const M = buildModel(normalizeCfg(p)), s = simulate(M, { seed: 1, ...o }); return { M, s, f: flightSummary(M, s) }; };
+const sleep = ms => new Promise(r => setTimeout(r, ms));
+(async () => {
+  try {
+    // ---- 1 段式は従来どおり ----
+    const A = run({});
+    ok('1 段式: 頂点 ≈ 1636 m、stack なし', near(A.f.apogee_m, 1636, 2) && !A.M.stack, A.f.apogee_m);
+    ok('段数の補正（9 → 3、0 → 1）', normalizeCfg({ stageCount: 9 }).stageCount === 3 && normalizeCfg({ stageCount: 0 }).stageCount === 1);
+    ok('段数は文字列でも数値になる', normalizeCfg({ stageCount: '2' }).stageCount === 2);
+
+    // ---- 無抗力・鉛直: 段ごとのロケット方程式の和と一致 ----
+    const nd = { stageCount: 2, cdScale: 0, wind: 0, gust: 0, elev: 90, rec1: 'none', b1SepDelay: 0, b1IgnDelay: 0, dt: 1 };
+    const N = run(nd), st = N.M.stack, b = st.stages[0], T = N.M.top;
+    const dv = (b.Itot / b.prop) * Math.log(N.M.massAt(0).m / N.M.massAt(b.tb - 1e-9).m) + (T.Itot / T.prop) * Math.log(T.massAt(0).m / T.massAt(T.tEnd).m);
+    const gAvg = G0 * (RE / (RE + 500)) ** 2;
+    ok('無抗力: 最終速度 = Σ ve·ln(m₀/m₁) − g·t（±0.5%）', near(N.s.ev.burnout.V, dv - gAvg * N.M.tb, 0.005 * N.s.ev.burnout.V), `${N.s.ev.burnout.V.toFixed(1)} / ${(dv - gAvg * N.M.tb).toFixed(1)}`);
+    const Es = N.s.rec.filter(r => r.t > N.M.tb + 0.1 && r.t < N.s.ev.apogee.t - 0.1).map(r => r.V ** 2 / 2 - G0 * RE * RE / (RE + r.z + N.M.siteAlt));
+    ok('無抗力: 最終段の惰性中はエネルギー保存', (Math.max(...Es) - Math.min(...Es)) < 1e-3 * N.s.ev.burnout.V ** 2 / 2, Math.max(...Es) - Math.min(...Es));
+
+    // ---- 質量・時刻 ----
+    const B = run({ stageCount: 2 }), MB = B.M, sb = MB.stack, b1 = sb.stages[0], TT = MB.top;
+    ok('点火時の全質量 = 最上段 + 1段目', near(MB.massAt(0).m, TT.massAt(0).m + b1.mDry + b1.prop, 1e-9), MB.massAt(0).m);
+    ok('全長 = 最上段 + 1段目', near(MB.L, TT.L + b1.L, 1e-9), MB.L);
+    ok('時刻: 分離 = 作動時間 + 分離遅れ、次段点火 = 分離 + 点火遅れ', near(sb.sep[0], b1.tb + b1.sepDelay, 1e-9) && near(sb.topIgn, sb.sep[0] + b1.ignDelay, 1e-9), `${sb.sep[0]} ${sb.topIgn}`);
+    ok('総力積は全段の和', near(MB.Itot, b1.Itot + TT.Itot, 1e-6), MB.Itot);
+    ok('推力: 分離〜点火の間は 0', MB.thrust(sb.sep[0] + b1.ignDelay / 2) === 0 && MB.thrust(0.5) > 0 && MB.thrust(sb.topIgn + 0.5) > 0);
+    const cg0 = MB.massAt(0).cg, cgT = TT.massAt(0).cg;
+    ok('下段を積むと重心は後方へ', cg0 > cgT, `${cg0} > ${cgT}`);
+    ok('下段のフィンで圧力中心が後方へ', MB.cpAt(0).xcp > TT.cpAt(0).xcp, `${MB.cpAt(0).xcp} > ${TT.cpAt(0).xcp}`);
+    ok('段構成の表: 2 段式は 4 行、3 段式は 6 行', stageTable(MB).length === 4 && stageTable(buildModel(normalizeCfg({ stageCount: 3 }))).length === 6);
+    ok('1 段式は段構成の表なし', stageTable(A.M) === null);
+
+    // ---- 飛行 ----
+    ok('2 段式: 同じ最上段の 1 段式より高く飛ぶ', B.f.apogee_m > A.f.apogee_m * 1.3, `${B.f.apogee_m.toFixed(0)} > ${A.f.apogee_m.toFixed(0)}`);
+    ok('2 段式: 着地する', !B.s.ev.error && !!B.s.ev.landing, B.s.ev.error || '');
+    ok('2 段式: 点火・分離の記録', B.s.ev.stages.length === 2 && B.s.ev.stages[0].sep && B.s.ev.stages[1].ign, JSON.stringify(B.s.ev.stages).slice(0, 200));
+    ok('2 段式: 記録の時刻は単調増加', B.s.rec.every((r, i, a) => i === 0 || r.t >= a[i - 1].t));
+    const z = B.s.rec.map(r => r.z), jump = Math.max(...z.slice(1).map((v, i) => Math.abs(v - z[i])));
+    ok('2 段式: 高度の記録に大きな跳びがない（分離時の重心移動のみ）', jump < 15, jump);
+    ok('2 段式: 最終段の点火で再び推力が出る', B.s.rec.some(r => r.t > sb.topIgn && r.T > 0));
+    ok('2 段式: 頂点は最終段の燃焼後', B.s.ev.apogee.t > MB.tb, `${B.s.ev.apogee.t} > ${MB.tb}`);
+    ok('2 段式: 開傘は頂点で（最上段の回収系）', near(B.s.ev.deploy1.t, B.s.ev.apogee.t, 0.05));
+    ok('切り離した段が着地する', B.s.drops.length === 1 && !!B.s.drops[0].landing, JSON.stringify(B.s.drops[0].landing));
+    ok('切り離した段は本体より先に着地', B.s.drops[0].landing.t < B.s.ev.landing.t);
+    ok('flightEnd は全ての着地の最後', near(B.f.flightEnd_t_s, Math.max(B.s.ev.landing.t, B.s.drops[0].landing.t), 1e-9));
+    const V = run({ stageCount: 2, b1Vt: 7, wind: 0, gust: 0 }), dl = V.s.drops[0].landing;
+    ok('下段にパラシュート: 終端速度 7 m/s ±10%（ρ の違いを含む）', near(Math.abs(dl.vz), 7, 0.7), dl.vz);
+    ok('下段にパラシュート: パラなしより遅く着地', dl.t > B.s.drops[0].landing.t, `${dl.t} > ${B.s.drops[0].landing.t}`);
+    const C = run({ stageCount: 3 });
+    ok('3 段式: 2 つの段が落下し、着地する', C.s.drops.length === 2 && !C.s.ev.error && C.s.drops.every(d => d.landing), C.s.ev.error || '');
+    ok('3 段式: 2 段式より高く飛ぶ', C.f.apogee_m > B.f.apogee_m, `${C.f.apogee_m.toFixed(0)} > ${B.f.apogee_m.toFixed(0)}`);
+    const P = run({ stageCount: 2, payloadOn: true, payloadTime: 15 });
+    ok('ペイロードは最上段から放出される', P.s.payload && P.s.payload.landing && P.s.ev.payload.t >= 15, P.s.ev.payload && P.s.ev.payload.t);
+    const H = run({ stageCount: 2 }, { ballistic: true });
+    ok('弾道落下: 最上段は開傘しない', !H.s.ev.deploy1 && !!H.s.ev.landing);
+    const W = run({ stageCount: 2 }, { record: false, wind: { speed: 6, from: 90 } }), W0 = run({ stageCount: 2 }, { record: false, wind: { speed: 0, from: 0 } });
+    ok('風の上書きが切り離した段にも効く', W.s.drops[0].landing.x !== W0.s.drops[0].landing.x, `${W.s.drops[0].landing.x} / ${W0.s.drops[0].landing.x}`);
+    const R = run({ stageCount: 2 }, { record: false });
+    ok('record:false でも結果は同じ', near(R.f.apogee_m, B.f.apogee_m, 1e-6), `${R.f.apogee_m} / ${B.f.apogee_m}`);
+    const E = run({ stageCount: 2, b1Src: 'eng', b1Eng: '0 0\n0.1 500\n2 500\n2.1 0', b1Prop: 500 });
+    ok('下段に推力表を使える', near(E.M.stack.stages[0].tb, 2.1, 1e-9) && !E.s.ev.error, E.M.stack.stages[0].Itot);
+    const L = run({ stageCount: 2, b1I: 2, b1Tb: 2, airMass: 1900 });
+    ok('下段の推力不足はエラーで止まる', !!L.s.ev.error, L.s.ev.error);
+
+    // ---- 解析 ----
+    const base = normalizeCfg({ stageCount: 2, gust: 0 }), unc = Object.fromEntries(Analysis.VARS.map(v => [v.k, v.a]));
+    const mc = await Analysis.runMC(base, unc, { n: 12, seed: 1, dist: 'uniform', hard: false, threads: 1 }, () => {}, { cancel: false });
+    ok('モンテカルロ: 1段目の落下点の楕円が出る', mc.nOk === 12 && mc.ell.b1 && mc.ell.b1.a95 > 0, mc.ell.b1 && mc.ell.b1.a95);
+    const ek = Analysis.runEKF(B.M, B.s, { imuHz: 100, accNoise: 0.2, accBias: 0.08, accRange: 16, gpsHz: 10, gpsSigma: 2.5, gpsVSigma: 0.3, gpsMaxV: 515, gpsMaxAlt: 18000, baroHz: 25, baroSigma: 20, baroBias: 30, seed: 7 });
+    ok('EKF が 2 段式でも動く', ek.rms3 < 20, ek.rms3);
+    const kml = Analysis.flightKml(B.M, B.s);
+    ok('KML: 正しい XML で落下と分離を含む', !new DOMParser().parseFromString(kml, 'application/xml').querySelector('parsererror') && /1段目 落下/.test(kml) && /1段目 分離/.test(kml));
+    const vr = Verify.run(normalizeCfg({ stageCount: 2 }));
+    ok('検算（2 段式）: 不合格 0', vr.n.fail === 0, `合格 ${vr.n.pass} 注意 ${vr.n.warn} 不合格 ${vr.n.fail}: ` + vr.items.filter(i => i.st === 'fail' || i.st === 'warn').map(i => `${i.title}: ${i.exp} / ${i.act} / ${i.diff}`).join(' ｜ '));
+
+    // ---- 画面 ----
+    localStorage.removeItem('student-rocket-sim:cfg');
+    const f = document.createElement('iframe'); f.src = '../index.html?s=' + Math.random();
+    await new Promise(res => { f.addEventListener('load', res); document.body.appendChild(f); });
+    await sleep(600);
+    const w = f.contentWindow, errs = []; w.addEventListener('error', e => errs.push(e.message));
+    const d = w.document, grp = t => [...d.querySelectorAll('#panel details')].find(x => x.querySelector('summary').textContent.includes(t));
+    ok('画面: 1 段式では下段の入力欄が隠れている', grp('1段目（最初に点火）').classList.contains('hide'));
+    const sel = d.getElementById('f_stageCount'); sel.value = '3'; sel.dispatchEvent(new Event('change', { bubbles: true })); await sleep(50);
+    w.eval('runNominal()');
+    ok('画面: 段数 3 で下段の入力欄が出る', !grp('1段目（最初に点火）').classList.contains('hide') && !grp('3 段式の中段').classList.contains('hide'));
+    ok('画面: cfg は数値の 3', w.eval('cfg.stageCount') === 3, w.eval('cfg.stageCount'));
+    ok('画面: 段構成の表が出る', d.querySelectorAll('#staticInfo .stage-t tr').length === 7, d.querySelectorAll('#staticInfo .stage-t tr').length);
+    ok('画面: 結果カードに段の点火と落下距離', /3段目 点火/.test(d.getElementById('results').innerText) && /2段目 落下距離/.test(d.getElementById('results').innerText));
+    for (const t of ['flight', 'charts', '3d']) { w.eval(`document.querySelector('[data-tab="${t}"]').click()`); await sleep(100); }
+    w.eval('seekT(5); drawPlay(); seekT(40); drawPlay();'); await sleep(100);
+    ok('画面: 再生範囲は切り離した段の着地を含む', w.eval('playEnd()') >= w.eval('sim.drops[1].landing.t'));
+    // 落下分散に下段の落下が入る
+    w.eval(`document.querySelector('[data-tab="disp"]').click()`); await sleep(100);
+    const D = d.getElementById('dispersion'), sp = [...D.querySelectorAll('input[type=text]')][0]; sp.value = '3'; sp.dispatchEvent(new Event('input', { bubbles: true })); sp.dispatchEvent(new Event('change', { bubbles: true }));
+    const ds = D.querySelector('select'); ds.value = '8'; ds.dispatchEvent(new Event('change', { bubbles: true }));
+    D.querySelector('.disp-go').click();
+    for (let i = 0; i < 200 && !/回の計算が終わりました/.test(D.innerText); i++) await sleep(100);
+    ok('落下分散: 1段目・2段目の落下が要約に入る', /1段目落下の最大落下距離/.test(D.innerText) && /2段目落下の最大落下距離/.test(D.innerText), D.innerText.slice(0, 200));
+    // 設定の書出し→読込で段の値が残る
+    const buf = await w.eval('SpecSheet._buildWorkbook(cfg, model, sim)');
+    w.__b = buf; const imp = await w.eval('SpecSheet.importFile(window.__b, normalizeCfg({}))');
+    ok('諸元表の書出し→読込で段数と下段の値が残る', +imp.patch.stageCount === 3 && +imp.patch.b1Len === w.eval('cfg.b1Len'), `${imp.patch.stageCount} ${imp.patch.b1Len}`);
+    ok('画面: 例外なし', errs.length === 0, errs.join(' / '));
+    f.remove();
+    localStorage.removeItem('student-rocket-sim:cfg');
+  } catch (e) { ok('例外', false, e.stack || e); }
+  document.getElementById('tbl').innerHTML = rows.join('');
+  document.getElementById('result').textContent = `PASS ${pass} / FAIL ${fail}`;
+})();
+</script>
+</body></html>

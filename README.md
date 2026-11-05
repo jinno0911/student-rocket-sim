@@ -5,6 +5,7 @@
 ## できること
 - **機体設計**: ノーズ形状・寸法・ボートテール・フィン（枚数/形状）・質量/重心・バラスト
 - **モーター**: プリセット（Estes C6 〜 L クラス、学生ハイブリッド例。いずれも近似値）、パラメトリック推力曲線、RASP `.eng` / `t,F` 表の貼り付け
+- **多段式**: 最大 3 段。下段ブースタごとに寸法・質量・フィン・推力（パラメトリック / 推力表）・分離遅れ・次段の点火遅れ・落下時のパラシュートを設定。段構成ごとの質量・安定余裕・Fst・推力重量比、上段の点火時の高度・速度・傾き、切り離した段の落下点を表示（2D/3D・モンテカルロ・落下分散・KML にも反映）
 - **質量モデル**: 機体＋固体モーター、またはハイブリッド（乾燥質量・酸化剤・燃料グレインの質量と重心、タンク口金への重心移動）
 - **回収系**: 1段目（頂点検知・点火/作動終了タイマー・冗長タイマー）＋2段目（高度・タイマー）、パラは直径×Cd か降下終端速度で指定、ペイロード放出
 - **諸元表**: 射場審査の「団体入力シート」形式 xlsx を読込・書出し（シートに無い項目は「シミュレータ追加諸元」シートに補完）。Debug 諸元のプリセット付き
@@ -36,4 +37,4 @@ python -m http.server 8775
 
 ## テスト
 ヘッドレス Chrome で実行（`bash test/headless.sh <URL|ファイル>`）:
-- `test/physics-test.html`（物理・審査値の検算）, `test/specsheet-test.html`, `test/dispersion-test.html`, `test/app-smoke.html`（結合）, `test/magi-test.html?noworker`（Magi から移植した機能。ワーカー込みはブラウザで開く）
+- `test/physics-test.html`（物理・審査値の検算）, `test/specsheet-test.html`, `test/dispersion-test.html`, `test/app-smoke.html`（結合）, `test/magi-test.html?noworker`（Magi から移植した機能。ワーカー込みはブラウザで開く）, `test/stage-test.html`（多段式）

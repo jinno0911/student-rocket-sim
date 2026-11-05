@@ -94,6 +94,12 @@ const PHYS_DEFAULTS = {
   windModel: 'power', windProfile: '', windMaxH: 0,         // 風: べき法則 / 高度別プロファイル（"高度m,風速m/s,風向deg"）、べき法則の上限高度（0=無制限）
   cnaScale: 100, burnScale: 100, cgShift: 0, cpShift: 0, chuteScale: 100, chuteDelay: 0, // ばらつき（モンテカルロ・ラプラス近似で使用）
   thMinApogee: 0, thMaxQ: 0, thMinRailV: 0, thMaxRange: 0, // 性能閾値（0 で無効）
+  // 多段式: stageCount = 全段数（1〜3）。既存の機体入力は最上段。b1 = 最下段（最初に点火）、b2 = 中段（3 段式のとき）
+  stageCount: 1,
+  b1Len: 800, b1D: 80, b1Mass: 900, b1CG: 450, b1FinN: 4, b1FinCr: 180, b1FinCt: 80, b1FinSpan: 90, b1FinSweep: 80, b1FinAft: 0, b1FinThick: 3,
+  b1Src: 'param', b1I: 1590, b1Tb: 2.9, b1Shape: 'regressive', b1Prop: 800, b1PropCG: 550, b1Eng: '', b1SepDelay: 0.5, b1IgnDelay: 0.5, b1Vt: 0, b1ChuteDelay: 1,
+  b2Len: 600, b2D: 80, b2Mass: 600, b2CG: 300, b2FinN: 4, b2FinCr: 140, b2FinCt: 70, b2FinSpan: 70, b2FinSweep: 60, b2FinAft: 0, b2FinThick: 3,
+  b2Src: 'param', b2I: 700, b2Tb: 2.0, b2Shape: 'regressive', b2Prop: 370, b2PropCG: 400, b2Eng: '', b2SepDelay: 0.5, b2IgnDelay: 0.5, b2Vt: 0, b2ChuteDelay: 1,
 };
 
 // 内部ヘルパー（トップレベル名を増やさないため 1 個にまとめる）
@@ -103,6 +109,7 @@ const PHYS_UTIL = (() => {
     posRef: ['nose', 'aft'], azimRef: ['true', 'magnetic'], windDirRef: ['true', 'magnetic'], landSurface: ['site', 'sea', 'terrain'], magMode: ['manual', 'auto'], windModel: ['power', 'profile'],
     massMode: ['motor', 'hybrid'], inertiaMode: ['auto', 'manual'], aeroMode: ['barrowman', 'manual'], thrustKind: ['measured', 'assumed'],
     rec1: ['apogee', 'ignition', 'burnout', 'none'], rec2: ['none', 'altitude', 'ignition'], chuteSpec: ['diameter', 'velocity'],
+    b1Src: ['param', 'eng'], b2Src: ['param', 'eng'], b1Shape: SHAPES.map(s => s[0]), b2Shape: SHAPES.map(s => s[0]),
     cdMode: ['auto', 'manual'], noseShape: ['ogive', 'cone', 'parabolic', 'elliptic'], motorSrc: ['param', 'eng'], mShape: SHAPES.map(s => s[0]),
   };
   const NULLABLE = ['cmq', 'clp'];
@@ -145,7 +152,23 @@ const PHYS_UTIL = (() => {
     return c.airMass + c.ballast + total - Math.min(prop, total);
   }
   const fmt = (x, n = 4) => String(+(+x).toPrecision(n));
-  return { clamp, interp, parseAeroTable, burnoutMassG, ENUMS, NULLABLE, fmt };
+  // 風（gust を除く）[東, 北] を返す関数を作る。opt.wind は speed / from（windDirRef 基準）で上書き（べき法則）
+  function windFn(M, opt = {}) {
+    let wind = M.wind, wdir = M.wdir, wTab = M.windTab, gustS = M.gust;
+    if (opt.wind) {
+      wind = Math.max(0, +opt.wind.speed || 0);
+      const wf = ((+opt.wind.from || 0) + M.windDirOff + 180) * D2R;
+      wdir = [Math.sin(wf), Math.cos(wf)]; gustS = 0; wTab = null;
+    }
+    const tabE = wTab && wTab.map(r => [r[0], r[1]]), tabN = wTab && wTab.map(r => [r[0], r[2]]);
+    const windV = z => {
+      if (wTab) { const zz = Math.max(z, 0); return [interp(tabE, zz), interp(tabN, zz)]; }
+      const w = wind * Math.pow(Math.min(Math.max(z, 1), M.windMaxH) / M.windRef, M.windExp);
+      return [w * wdir[0], w * wdir[1]];
+    };
+    return { windV, gustS };
+  }
+  return { clamp, interp, parseAeroTable, burnoutMassG, ENUMS, NULLABLE, fmt, windFn };
 })();
 
 // 入力を変更せず、移行・既定値マージ・補正を行った新しい cfg を返す（冪等）。補正内容は非列挙の __warn に入る
@@ -197,6 +220,7 @@ function normalizeCfg(c0) {
   if (n.windRef < 0.1) { warn(`べき法則の基準高さ ${fmt(n.windRef)} m を 0.1 m にしました`); n.windRef = 0.1; }
   if (n.hBurnTime < 0.01) { warn(`燃焼時間 ${fmt(n.hBurnTime)} s を 0.01 s にしました`); n.hBurnTime = 0.01; }
   if (n.hFuelPost > n.hFuelPre) { warn(`燃焼後燃料質量 ${fmt(n.hFuelPost)} g が燃焼前 ${fmt(n.hFuelPre)} g を超えるため、燃焼前と同じにしました`); n.hFuelPost = n.hFuelPre; }
+  { const v = U.clamp(Math.round(n.stageCount), 1, 3); if (v !== n.stageCount) { warn(`段数 ${fmt(n.stageCount)} を ${v} にしました（1〜3）`); n.stageCount = v; } }
   if (n.openTime < 0) { warn(`展開所要時間 ${fmt(n.openTime)} s を 0 s にしました`); n.openTime = 0; }
   if (n.payloadOn) {
     const mb = U.burnoutMassG(n);
@@ -490,7 +514,7 @@ function buildModel(c0) {
   const windFromTrue = ((c.windFrom + windDirOff) % 360 + 360) % 360;
   const wf = (windFromTrue + 180) * D2R;
 
-  return {
+  const single = {
     c, warn, name: c.name, massMode: c.massMode,
     L, d, R, A, Ln, Lb, Lt, dBase, comps, Cr, Ct, s, Xs, Xb, N,
     Ymac, Rcant, rg2, Sf, cant,
@@ -511,6 +535,144 @@ function buildModel(c0) {
     wind: Math.max(0, c.wind), wdir: [Math.sin(wf), Math.cos(wf)], windFromTrue, windDirOff, windRef: c.windRef, windExp: c.windExp, gust: Math.max(0, c.gust),
     dt: Math.min(0.02, Math.max(0.0005, c.dt / 1000)),
   };
+  return c.stageCount > 1 ? buildStack(single) : single;
+}
+
+// ---------------- 多段式 ----------------
+// 最上段のモデル top に下段ブースタを積んだ「段ごとのモデル」を作る。位置はすべて最上段の先端基準 [m]
+// 戻り値 F: 点火時の全段（静的な表示用）。F.top = 最上段、F.stack = {stages, segs（各段の燃焼中の積み上げモデル）, ign, sep}
+function buildStack(top) {
+  const c = top.c, mm = 1e-3, gr = 1e-3, warn = top.warn;
+  const bs = Math.max(c.burnScale, 1) / 100, ts = c.thrustScale / 100;
+  const order = c.stageCount === 3 ? ['b1', 'b2'] : ['b1']; // 点火順（下から）
+  const stages = order.map((k, i) => {
+    const g = n => c[k + n];
+    let pts = null;
+    if (g('Src') === 'eng') { const e = parseEng(g('Eng')); if (e) pts = e.pts; else warn.push(`${i + 1}段目の推力表を読み取れなかったため、パラメトリック曲線を使いました`); }
+    if (!pts) pts = genCurve(g('Shape'), g('I'), g('Tb'));
+    pts = pts.map(p => [p[0] * bs, p[1] * ts / bs]);
+    const cum = [0];
+    for (let j = 1; j < pts.length; j++) cum.push(cum[j - 1] + (pts[j][1] + pts[j - 1][1]) / 2 * (pts[j][0] - pts[j - 1][0]));
+    const Itot = cum[cum.length - 1], tb = pts[pts.length - 1][0];
+    if (!(Itot > 0)) warn.push(`${i + 1}段目の総力積が 0 です`);
+    const seg = t => { let lo = 0, hi = pts.length - 1; while (hi - lo > 1) { const m = (lo + hi) >> 1; if (pts[m][0] <= t) lo = m; else hi = m; } return lo; };
+    const F = t => { if (t <= 0 || t >= tb) return 0; const j = seg(t), a = pts[j], b = pts[j + 1]; return a[1] + (b[1] - a[1]) * (t - a[0]) / Math.max(b[0] - a[0], 1e-12); };
+    const cumAt = t => { if (t <= 0) return 0; if (t >= tb) return Itot; const j = seg(t); return cum[j] + (pts[j][1] + F(t)) / 2 * (t - pts[j][0]); };
+    const L = g('Len') * mm, d = g('D') * mm, R = d / 2, Cr = g('FinCr') * mm, Ct = g('FinCt') * mm, sp = g('FinSpan') * mm, Xs = g('FinSweep') * mm, N = Math.max(1, Math.round(g('FinN')));
+    const mDry = g('Mass') * gr, prop = g('Prop') * gr;
+    const lf = Math.hypot(sp, Xs + Ct / 2 - Cr / 2), nf = { 5: 0.97, 6: 0.948, 7: 0.9, 8: 0.865 }[N] ?? 1;
+    const cnaF = sp > 0 ? (1 + R / (sp + R)) * nf * 4 * N * (sp / d) ** 2 / (1 + Math.sqrt(1 + (2 * lf / Math.max(Cr + Ct, 1e-6)) ** 2)) : 0;
+    const xfLocal = L - g('FinAft') * mm - Cr + Xs * (Cr + 2 * Ct) / (3 * Math.max(Cr + Ct, 1e-9)) + (1 / 6) * ((Cr + Ct) - Cr * Ct / Math.max(Cr + Ct, 1e-9));
+    const Sf = (Cr + Ct) * sp / 2, kc = sp > 0 ? (Ct - Cr) / sp : 0, ac = Cr - kc * R, Fr = r => ac * r ** 3 / 3 + kc * r ** 4 / 4;
+    const rg2 = Sf > 0 ? (Fr(R + sp) - Fr(R)) / Sf : R * R;
+    return { k, no: i + 1, pts, F, cumAt, Itot, tb, L, d, R, Cr, Ct, sp, Xs, N, Sf, finThick: g('FinThick') * mm, finAft: g('FinAft') * mm, mDry, xDry: g('CG') * mm, prop, xProp: g('PropCG') * mm,
+      cnaF, xfLocal, rg2, sepDelay: Math.max(g('SepDelay'), 0), ignDelay: Math.max(g('IgnDelay'), 0), vt: g('Vt'), chuteDelay: Math.max(g('ChuteDelay'), 0) };
+  });
+  // 段の位置（最上段の後端から下へ積む）: x0 = その段の前端の位置
+  { let x = top.L; for (let i = stages.length - 1; i >= 0; i--) { stages[i].x0 = x; x += stages[i].L; } }
+  // 時刻（点火・分離）: 分離 = 点火 + 作動時間 + 分離遅れ、次段の点火 = 分離 + 点火遅れ
+  const ign = [], sep = [];
+  { let t = 0; stages.forEach((b, i) => { ign[i] = t; sep[i] = t + b.tb + b.sepDelay; t = sep[i] + b.ignDelay; }); ign[stages.length] = t; }
+  const topIgn = ign[stages.length];
+  const top0 = top.massAt(-1); // 点火前の最上段
+  const cdRatio = top.cdEst > 0 ? top.cdAt(0) / top.cdEst : 1;
+  // i 段目（点火順）が燃焼中の積み上げモデル。時刻は i 段目の点火からの時間
+  const mkSeg = i => {
+    const att = stages.slice(i); // i 段目から上のブースタ
+    const L = att[0].x0 + att[0].L, dRef = Math.max(top.d, ...att.map(b => b.d)), R = dRef / 2, A = Math.PI * R * R;
+    const sc = d => (d / dRef) ** 2;
+    const comps = top.comps.map(p => ({ cna: p.cna * sc(top.d), x: p.x, fin: p.fin, rg2: p.fin ? top.rg2 : 0 }));
+    let dAbove = top.dBase;
+    for (let j = att.length - 1; j >= 0; j--) { // 上の段から順に
+      const b = att[j];
+      if (Math.abs(b.d - dAbove) > 1e-6) comps.push({ cna: 2 * (sc(b.d) - sc(dAbove)), x: b.x0, fin: false, rg2: 0 }); // 段間の径の変化
+      comps.push({ cna: b.cnaF * sc(b.d), x: b.x0 + b.xfLocal, fin: true, rg2: b.rg2 });
+      dAbove = b.d;
+    }
+    const mc = !!c.machCorr && c.aeroMode !== 'manual';
+    const barrow = Mn => {
+      const kf = mc ? 1 / Math.sqrt(1 - Math.min(Mn, 0.8) ** 2) : 1;
+      let s0 = 0, s1 = 0, s2 = 0, cf = 0, cr = 0;
+      for (const p of comps) { const v = p.cna * (p.fin ? kf : 1); s0 += v; s1 += v * p.x; s2 += v * p.x * p.x; if (p.fin) { cf += v; cr += v * p.rg2; } }
+      return { s0, s1, s2, cf, cr };
+    };
+    const cpAt = Mn => {
+      const b = barrow(Mn);
+      return { cna: b.s0 * c.cnaScale / 100, xcp: (b.s0 !== 0 ? b.s1 / b.s0 : 0) + c.cpShift * mm, s0: b.s0, s1: b.s1, s2: b.s2, cnaF: b.cf };
+    };
+    const cmqEq = (cg, Mn = 0) => { const b = barrow(Mn); return -2 * Math.max(0, b.s2 - 2 * cg * b.s1 + cg * cg * b.s0) / (L * L); };
+    const clpEq = (Mn = 0) => -4 * barrow(Mn).cr / (L * L);
+    // 抗力: 積み上げ全体を 1 本の機体として Mandell 系の簡易式で推定し、最上段の Cd の倍率（手入力・cdScale）を掛ける
+    const Re = 100 * L / 1.5e-5, Cf = 0.074 / Math.pow(Re, 0.2), fr = L / dRef, dB = att[0].d;
+    const cdFB = (1 + 60 / fr ** 3 + 0.0025 * fr) * (2.7 * top.Ln / dRef + 4 * (L - top.Ln) / dRef) * Cf;
+    const cdBase = 0.029 * (dB / dRef) ** 3 / Math.sqrt(Math.max(cdFB, 1e-4));
+    let cdFin = 2 * Cf * (1 + 2 * (c.finThick * mm) / Math.max((top.Cr + top.Ct) / 2, 1e-6)) * 4 * top.N * top.Sf / (Math.PI * dRef * dRef);
+    for (const b of att) cdFin += 2 * Cf * (1 + 2 * b.finThick / Math.max((b.Cr + b.Ct) / 2, 1e-6)) * 4 * b.N * b.Sf / (Math.PI * dRef * dRef);
+    const cd0 = (cdFB + cdBase + cdFin) * 1.3 * cdRatio;
+    const cdAt = Mn => cd0 * (mc ? machFactor(Mn) : 1);
+    const self = att[0];
+    const massAt = t => {
+      const parts = [[top0.m, top0.cg, top0.I, top0.Ir]];
+      for (const b of att) {
+        const pr = b === self ? b.prop * (1 - (b.Itot > 0 ? b.cumAt(t) / b.Itot : 1)) : b.prop;
+        const m = b.mDry + pr, x = b.x0 + (b.mDry * b.xDry + pr * b.xProp) / Math.max(m, 1e-9);
+        parts.push([m, x, m * b.L * b.L / 12, 0.5 * m * b.R * b.R]);
+      }
+      const m = parts.reduce((a, q) => a + q[0], 0), cg = parts.reduce((a, q) => a + q[0] * q[1], 0) / m;
+      const I = parts.reduce((a, q) => a + q[2] + q[0] * (q[1] - cg) ** 2, 0), Ir = parts.reduce((a, q) => a + q[3], 0);
+      return { m, cg, I, Ir };
+    };
+    return {
+      ...top, c: { ...c, rec1: 'none', rec2: 'none', payloadOn: false }, stageNo: i + 1, L, d: dRef, R, A, massAt, cpAt, cdAt, cd0, cdEst: cd0, cmqEq, clpEq,
+      cmqAt: (Mn, cg) => cmqEq(cg, Mn), clpAt: Mn => clpEq(Mn), cantMoment: (q, Mn) => top.cantMoment(q, Mn) * sc(top.d),
+      thrust: t => self.F(t), pts: self.pts, Itot: self.Itot, tb: self.tb, tIgn: 0, tEnd: self.tb, burnTime: self.tb,
+      payloadOn: false, payloadMass: 0, comps,
+    };
+  };
+  const segs = stages.map((_, i) => mkSeg(i));
+  // 全体（時刻は最初の点火から）
+  const allPts = [];
+  stages.forEach((b, i) => b.pts.forEach(p => allPts.push([p[0] + ign[i], p[1]])));
+  top.pts.forEach(p => allPts.push([p[0] + topIgn, p[1]]));
+  allPts.sort((a, b) => a[0] - b[0]);
+  const massAtG = (t, rel = false) => {
+    for (let i = 0; i < stages.length; i++) if (t < sep[i]) return segs[i].massAt(t - ign[i]);
+    return top.massAt(t - topIgn, rel);
+  };
+  const thrustG = (t, z) => {
+    for (let i = 0; i < stages.length; i++) if (t < sep[i]) return segs[i].thrust(t - ign[i]);
+    return top.thrust(t - topIgn, z);
+  };
+  const cdaAt = (t, Mn) => {
+    for (let i = 0; i < stages.length; i++) if (t < sep[i]) return segs[i].A * segs[i].cdAt(Mn);
+    return top.A * top.cdAt(Mn);
+  };
+  const s0 = segs[0], Itot = stages.reduce((a, b) => a + b.Itot, top.Itot);
+  return {
+    ...s0, c: top.c, top, stack: { stages, segs, ign, sep, topIgn }, warn, topIgn,
+    massAt: massAtG, thrust: thrustG, cdaAt, pts: allPts, Itot, Fmax: Math.max(top.Fmax, ...stages.map(b => Math.max(...b.pts.map(p => p[1])))),
+    tb: topIgn + top.tb, tIgn: s0.tIgn, burnTime: top.burnTime, tEnd: topIgn + top.tEnd, opTimeCurve: top.opTimeCurve,
+    prop: stages.reduce((a, b) => a + b.prop, top.prop), massDropped: stages.reduce((a, b) => a + b.mDry, 0),
+    payloadOn: top.payloadOn, payloadMass: top.payloadMass, payloadPos: top.payloadPos, payloadCdA: top.payloadCdA, mRef: top.mRef,
+  };
+}
+// 段構成ごとの静的な安定性（点火時・燃焼終了時）。多段でなければ null
+function stageTable(M) {
+  if (!M.stack) return null;
+  const { stages, segs, ign } = M.stack, T = M.top, rows = [];
+  const row = (label, Mx, t, F, no) => {
+    const ms = Mx.massAt(t), cp = Mx.cpAt(0);
+    rows.push({ label, stage: no, m: ms.m, L: Mx.L, cg: ms.cg, cp: cp.xcp, sm: (cp.xcp - ms.cg) / Mx.d, fst: (cp.xcp - ms.cg) / Mx.L * 100, twr: F / (ms.m * G0) });
+  };
+  stages.forEach((b, i) => {
+    const avg = b.tb > 0 ? b.Itot / b.tb : 0, n = stages.length - i + 1;
+    row(`${b.no}段目 点火時（${n} 段積み）`, segs[i], 0, avg, b.no);
+    row(`${b.no}段目 燃焼終了時`, segs[i], b.tb, 0, b.no);
+  });
+  const no = stages.length + 1, avgT = T.tb > 0 ? T.Itot / T.tb : 0;
+  row(`${no}段目（最上段）点火時`, T, 0, avgT, no);
+  row(`${no}段目（最上段）燃焼終了時`, T, T.tEnd, 0, no);
+  return rows;
 }
 
 // ---------------- 審査用の計算値 ----------------
@@ -537,6 +699,7 @@ const REVIEW_LABELS = [
 
 // 諸元表の検算値（ペイロード放出前 = released:false）。該当しない値は null。位置 mm、質量 kg
 function reviewValues(M) {
+  if (M.top) return reviewValues(M.top); // 多段式は最上段の値（段構成ごとの値は stageTable）
   const c = M.c, hyb = M.massMode === 'hybrid', manA = c.aeroMode === 'manual', Lmm = M.L * 1000;
   const aft = x => Lmm - x * 1000, nose = x => x * 1000;
   const wet = M.massAt(0), bo = M.massAt(M.tEnd);
@@ -578,28 +741,19 @@ function gauss(r) { let u = 0; while (u === 0) u = r(); return Math.sqrt(-2 * Ma
 
 // 14 状態: y[0..2] 位置, y[3..5] 速度, y[6..8] u（機軸）, y[9..11] ω⊥（u に垂直）, y[12] p（ロールレート）, y[13] φ（ロール角）
 // phase 0: レール上, 1: 自由飛行, 2: パラ降下。ペイロードは同じ外側ステップ・同じ gust で並行に積分する（spec §2.6 / §2.8 / §2.9 / §3.2）
-function simulate(M, opt = {}) {
-  const c = M.c;
+function simulate(M, opt = {}) { return M.stack ? simulateStaged(M, opt) : simulateCore(M, opt); }
+// opt.tStart: このモデルの点火時刻（M の時刻 = t − tStart）、opt.init: 途中からの開始状態、opt.stopAt: この時刻で打ち切って end を返す（多段用）
+function simulateCore(M, opt = {}) {
+  const c = M.c, tS = opt.tStart || 0;
   const rng = mulberry32(opt.seed ?? 1);
   const record = opt.record !== false, ballistic = !!opt.ballistic;
-  let wind = M.wind, wdir = M.wdir, gustS = M.gust, wTab = M.windTab;
-  if (opt.wind) { // speed / from（from は windDirRef 基準）で上書き（べき法則）し、gust は 0
-    wind = Math.max(0, +opt.wind.speed || 0);
-    const wf = ((+opt.wind.from || 0) + M.windDirOff + 180) * D2R;
-    wdir = [Math.sin(wf), Math.cos(wf)]; gustS = 0; wTab = null;
-  }
-  const U = PHYS_UTIL, tabE = wTab && wTab.map(r => [r[0], r[1]]), tabN = wTab && wTab.map(r => [r[0], r[2]]);
-  // 風（gust を除く）[東, 北]: プロファイルは高度で補間、べき法則は windMaxH で頭打ち
-  const windV = z => {
-    if (wTab) { const zz = Math.max(z, 0); return [U.interp(tabE, zz), U.interp(tabN, zz)]; }
-    const w = wind * Math.pow(Math.min(Math.max(z, 1), M.windMaxH) / M.windRef, M.windExp);
-    return [w * wdir[0], w * wdir[1]];
-  };
+  const { windV, gustS } = PHYS_UTIL.windFn(M, opt); // 風（gust を除く）。プロファイルは高度で補間、べき法則は windMaxH で頭打ち
   const GEO = M.earthRot && typeof window !== 'undefined' ? window.Geo : null;
   const gAt = h => (GEO ? GEO.normalGravity(M.lat, h) : G0 * (RE / (RE + h)) ** 2);
   const OM = M.omegaENU, rot = !!GEO;
   const landZ = Math.min(M.landZ, 0);
   const gz = (x, yy) => (M.groundZ ? M.groundZ(x, yy) : landZ); // 着地面の高さ（射点基準）
+  const U_clamp = v => Math.max(-1, Math.min(1, v));
   const tD = M.chuteDelay || 0; // 開傘タイミングのずれ（ばらつき）
   const rec = [], ev = {};
   const st = { maxV: 0, maxMach: 0, maxG: 0, maxQ: 0, maxAlpha: 0, minSM: Infinity, apogee: 0, apoT: 0, apoX: 0, apoY: 0, maxRollRate: 0,
@@ -621,7 +775,7 @@ function simulate(M, opt = {}) {
   // 本体の微分
   function deriv(t, y, dy, info) {
     const z = y[2], h = Math.max(M.siteAlt + z, 0);
-    const at = atm(M, h), T = M.thrust(t, z), ms = M.massAt(t, released), g = gAt(h);
+    const at = atm(M, h), T = M.thrust(t - tS, z), ms = M.massAt(t - tS, released), g = gAt(h);
     const wv = windV(z), wx = wv[0] + gust[0], wy = wv[1] + gust[1];
     dy[0] = y[3]; dy[1] = y[4]; dy[2] = y[5];
     for (let i = 6; i < NS; i++) dy[i] = 0;
@@ -719,7 +873,7 @@ function simulate(M, opt = {}) {
   };
   // phase 1 のサブステップ数（外側ステップの開始時に評価。§3.2）
   const subN1 = (t, H) => {
-    const z = y[2], at = atm(M, Math.max(M.siteAlt + z, 0)), ms = M.massAt(t, released);
+    const z = y[2], at = atm(M, Math.max(M.siteAlt + z, 0)), ms = M.massAt(t - tS, released);
     const wv = windV(z), V = Math.hypot(y[3] - wv[0] - gust[0], y[4] - wv[1] - gust[1], y[5]);
     const q = 0.5 * at.rho * V * V, mach = V / at.a, cp = M.cpAt(mach);
     const wn = Math.sqrt(q * M.A * Math.abs(cp.cna) * Math.abs(cp.xcp - ms.cg) / ms.I);
@@ -751,8 +905,8 @@ function simulate(M, opt = {}) {
   const tipStep = (t0, H) => {
     const n = Math.max(1, Math.ceil(H / 0.0005)), h = H / n;
     for (let i = 0; i < n && tip; i++) {
-      const tt = t0 + i * h, z = y[2], hh = Math.max(M.siteAlt + z, 0), at = atm(M, hh), ms = M.massAt(tt), g = gAt(hh);
-      const T = M.thrust(tt, z), V = Math.abs(tip.vP), D = 0.5 * at.rho * V * V * M.A * M.cdAt(V / at.a) * Math.sign(tip.vP);
+      const tt = t0 + i * h, z = y[2], hh = Math.max(M.siteAlt + z, 0), at = atm(M, hh), ms = M.massAt(tt - tS), g = gAt(hh);
+      const T = M.thrust(tt - tS, z), V = Math.abs(tip.vP), D = 0.5 * at.rho * V * V * M.A * M.cdAt(V / at.a) * Math.sign(tip.vP);
       const aR = (T - D) / ms.m - g * u0[2];
       tip.sP += tip.vP * h + 0.5 * aR * h * h; tip.vP += aR * h;
       const d = Math.max(M.L - ms.cg - M.lugAft, 0), Ip = ms.I + ms.m * d * d, k = ms.m * g * d / Ip;
@@ -782,6 +936,11 @@ function simulate(M, opt = {}) {
   };
 
   let tRec = 0, lifted = false, apoDone = false, tApo = -1, maxZ = 0, bodyDone = false;
+  if (opt.init) { // 分離直後からの続き
+    const I = opt.init;
+    t = I.t; tRec = I.t; y.set(I.y); phase = I.phase; lifted = true; maxZ = I.maxZ; gust[0] = I.gust[0]; gust[1] = I.gust[1];
+    st.apogee = I.maxZ; st.apoT = I.apoT; st.apoX = I.apoX; st.apoY = I.apoY;
+  }
   deriv(t, y, dtmp, aux);
   if (record) rec.push(snap());
 
@@ -793,7 +952,7 @@ function simulate(M, opt = {}) {
   };
   // ペイロード放出（ステップ境界）。本体は重心の移動分だけ位置・速度を補正する（ω⊥, p は不変）
   const release = () => {
-    const cgOld = M.massAt(t, false).cg, cgNew = M.massAt(t, true).cg;
+    const cgOld = M.massAt(t - tS, false).cg, cgNew = M.massAt(t - tS, true).cg;
     const wxu = [y[10] * y[8] - y[11] * y[7], y[11] * y[6] - y[9] * y[8], y[9] * y[7] - y[10] * y[6]]; // ω⊥ × u
     const dp = cgOld - M.payloadPos, db = cgOld - cgNew;
     const s = new Float64Array(6);
@@ -809,6 +968,10 @@ function simulate(M, opt = {}) {
   };
 
   while (t < 1800) {
+    if (opt.stopAt != null && !bodyDone && t >= opt.stopAt - 1e-9) { // 段の分離
+      if (phase === 0 || phase === 3) { ev.error = '段の分離時刻にまだランチャー上です（推力不足）'; break; }
+      return { rec, ev, st, payload: null, end: { t, y: y.slice(), phase, maxZ, apoT: st.apoT, apoX: st.apoX, apoY: st.apoY, gust: gust.slice() } };
+    }
     const pAct = !!pay && !pay.done;
     const H = bodyDone || phase === 2 ? 0.02 : M.dt;
     if (gustS > 0) { // gust は外側ステップごとに更新（本体・ペイロード共通）
@@ -826,7 +989,7 @@ function simulate(M, opt = {}) {
         if (n > 200) { ev.error = '回転運動が硬すぎます（慣性モーメント・減衰係数の単位を確認）'; break; }
         for (let i = 0; i < n; i++) { rkB(deriv, tp + i * H / n, y, H / n); fixRot(); }
       } else if (phase === 2) {
-        const n = subND(y[2], y[3], y[4], y[5], chuteCdA(tp + H), M.massAt(tp, released).m, H);
+        const n = subND(y[2], y[3], y[4], y[5], chuteCdA(tp + H), M.massAt(tp - tS, released).m, H);
         for (let i = 0; i < n; i++) rkB(deriv, tp + i * H / n, y, H / n);
       } else rkB(deriv, tp, y, H);
       if (!y.every(Number.isFinite)) { ev.error = '数値が発散しました（積分刻みを小さくしてください）'; break; }
@@ -846,13 +1009,14 @@ function simulate(M, opt = {}) {
         if (sAlong < 0) for (let i = 0; i < 6; i++) y[i] = 0;
         if (!lifted && sAlong > 1e-3) { lifted = true; ev.liftoff = { t }; }
         if (lifted && M.tipOff && sAlong >= M.railUp && sAlong < M.railEff) { // 上側ラグが抜けた → ティップオフ
-          const ms = M.massAt(t), d = Math.max(M.L - ms.cg - M.lugAft, 0);
+          const ms = M.massAt(t - tS), d = Math.max(M.L - ms.cg - M.lugAft, 0);
           tip = { s0: sAlong, sP: sAlong, vP: y[3] * u0[0] + y[4] * u0[1] + y[5] * u0[2], P0: [y[0] - d * u0[0], y[1] - d * u0[1], y[2] - d * u0[2]] };
           phase = 3; ev.upperLug = { t };
         } else if (lifted && sAlong >= M.railEff) exitRail(); // 最後尾ラグがレール端を抜けたら離脱（railEff = railLen − lugAft。離床前は離脱しない）
         if (!lifted && t > M.tb + 1) { ev.error = '推力不足で離陸できません'; break; }
       } else if (phase === 3 && tipDone) exitRail();
-      if (!ev.burnout && reached(M.tb)) ev.burnout = { t: M.tb, z: y[2], V: Math.hypot(y[3], y[4], y[5]) };
+      if (!ev.burnout && reached(M.tb + tS)) ev.burnout = { t: M.tb + tS, z: y[2], V: Math.hypot(y[3], y[4], y[5]) };
+      if (opt.init && !ev.ignition && reached(tS)) ev.ignition = { t, z: y[2], V: Math.hypot(y[3], y[4], y[5]), tilt: Math.acos(U_clamp(y[8])) / D2R };
 
       deriv(t, y, dtmp, aux);
       const Vg = Math.hypot(y[3], y[4], y[5]);
@@ -875,7 +1039,7 @@ function simulate(M, opt = {}) {
         if (aux.fs > a.maxG) a.maxG = aux.fs;
       }
       if (y[2] > maxZ) { maxZ = y[2]; st.apogee = maxZ; st.apoT = t; st.apoX = y[0]; st.apoY = y[1]; }
-      if (!apoDone && phase !== 0 && y[5] < 0) { apoDone = true; tApo = t; ev.apogee = { t, z: maxZ, V: aux.V }; }
+      if (!apoDone && !opt.noApogee && (!opt.staged || t >= tS + M.tb) && phase !== 0 && y[5] < 0) { apoDone = true; tApo = t; ev.apogee = { t, z: maxZ, V: aux.V }; }
 
       // 着地（本体）
       const g0z = lifted && phase !== 0 && phase !== 3 ? gz(y[0], y[1]) : -Infinity;
@@ -900,7 +1064,7 @@ function simulate(M, opt = {}) {
               if (okA && okT) by = tApo + c.rec1Delay <= c.rec1Backup ? 'apogee' : 'timer';
               else by = okA ? 'apogee' : okT ? 'timer' : null;
             } else if (c.rec1 === 'ignition') { if (reached(c.rec1Time + tD)) by = 'timer'; }
-            else if (reached(M.tb + c.rec1Time + tD)) by = 'timer';
+            else if (reached(M.tb + tS + c.rec1Time + tD)) by = 'timer';
             if (by) deploy(1, by);
           }
           if (tc2 < 0) {
@@ -939,6 +1103,94 @@ function simulate(M, opt = {}) {
   return { rec, ev, st, payload: pay ? pay.out : null };
 }
 
+// 多段式: 段ごとに simulateCore をつなぐ。分離時に本体の重心を次の構成へ移し、切り離した段は dropStage で落とす
+function simulateStaged(M, opt = {}) {
+  const { stages, segs, ign, topIgn } = M.stack, T = M.top, seed = opt.seed ?? 1;
+  const rec = [], ev = {}, drops = [], stageEv = [];
+  const st = { maxV: 0, maxMach: 0, maxG: 0, maxQ: 0, maxAlpha: 0, minSM: Infinity, apogee: 0, apoT: 0, apoX: 0, apoY: 0, maxRollRate: 0,
+    asc: { maxV: 0, maxV_t: NaN, maxMach: 0, maxQ: 0, maxQ_t: NaN, maxG: 0 } };
+  const merge = r => {
+    if (r.rec.length) rec.push(...r.rec);
+    Object.assign(ev, r.ev);
+    const s = r.st, a = s.asc || {};
+    for (const k of ['maxV', 'maxMach', 'maxG', 'maxQ', 'maxAlpha', 'maxRollRate']) if (s[k] > st[k]) st[k] = s[k];
+    if (s.minSM < st.minSM) st.minSM = s.minSM;
+    if (s.apogee >= st.apogee) { st.apogee = s.apogee; st.apoT = s.apoT; st.apoX = s.apoX; st.apoY = s.apoY; }
+    if (a.maxV > st.asc.maxV) { st.asc.maxV = a.maxV; st.asc.maxV_t = a.maxV_t; }
+    if (a.maxQ > st.asc.maxQ) { st.asc.maxQ = a.maxQ; st.asc.maxQ_t = a.maxQ_t; }
+    if (a.maxMach > st.asc.maxMach) st.asc.maxMach = a.maxMach;
+    if (a.maxG > st.asc.maxG) st.asc.maxG = a.maxG;
+  };
+  let init = null, ended = false;
+  for (let i = 0; i < stages.length; i++) {
+    const b = stages[i], Mx = segs[i], tsep = M.stack.sep[i];
+    const r = simulateCore(Mx, { ...opt, seed: seed + i, tStart: ign[i], stopAt: tsep, init, staged: true, noApogee: true });
+    const igEv = r.ev.ignition; delete r.ev.ignition;
+    const bo = r.ev.burnout; delete r.ev.burnout;
+    merge(r);
+    stageEv.push({ stage: b.no, ign: igEv || { t: ign[i], z: 0, V: 0, tilt: 90 - M.elev / D2R }, burnout: bo || null, sep: null });
+    if (!r.end) { ended = true; break; }
+    // 分離: 位置 = 重心なので、次の構成の重心へ移す（速度は ω×r の分だけ補正）
+    const E = r.end, y = E.y, u = [y[6], y[7], y[8]], w = [y[9], y[10], y[11]];
+    const wxu = [w[1] * u[2] - w[2] * u[1], w[2] * u[0] - w[0] * u[2], w[0] * u[1] - w[1] * u[0]];
+    const nxt = i + 1 < stages.length ? segs[i + 1] : T, nxtT0 = ign[i + 1];
+    const cgOld = Mx.massAt(E.t - ign[i]).cg, cgNew = nxt.massAt(E.t - nxtT0).cg;
+    const xb = b.x0 + b.xDry, db = cgOld - xb, dn = cgOld - cgNew;
+    const rD = [0, 1, 2].map(j => y[j] + db * u[j]), vD = [0, 1, 2].map(j => y[3 + j] + db * wxu[j]);
+    const vS = Math.hypot(y[3], y[4], y[5]);
+    stageEv[i].sep = { t: E.t, z: y[2], V: vS };
+    drops.push(dropStage(M, b, E.t, rD, vD, opt));
+    for (let j = 0; j < 3; j++) { y[j] += dn * u[j]; y[3 + j] += dn * wxu[j]; }
+    init = { t: E.t, y, phase: E.phase, maxZ: E.maxZ, apoT: E.apoT, apoX: E.apoX, apoY: E.apoY, gust: E.gust };
+  }
+  let payload = null;
+  if (!ended) {
+    const r = simulateCore(T, { ...opt, seed: seed + stages.length, tStart: topIgn, init, staged: true });
+    const igEv = r.ev.ignition; delete r.ev.ignition;
+    merge(r); payload = r.payload;
+    stageEv.push({ stage: stages.length + 1, ign: igEv || null, burnout: r.ev.burnout || null, sep: null });
+  }
+  if (!ev.apogee && st.apogee > 0) ev.apogee = { t: st.apoT, z: st.apogee, V: NaN };
+  if (st.minSM === Infinity) st.minSM = NaN;
+  ev.stages = stageEv;
+  return { rec, ev, st, payload, drops };
+}
+// 切り離した段の落下（質点）。パラシュートなし（vt = 0）はタンブリングの抗力 0.6·L·d
+function dropStage(M, b, t0, r0, v0, opt) {
+  const { windV } = PHYS_UTIL.windFn(M, opt), record = opt.record !== false, T = M.top, m = b.mDry;
+  const cdaT = 0.6 * b.L * b.d, cds = b.vt > 0 ? 2 * m * G_SHEET / (RHO0_SHEET * b.vt * b.vt) : 0, open = T.openTime;
+  const landZ = Math.min(T.landZ, 0), gz = (x, y) => (T.groundZ ? T.groundZ(x, y) : landZ);
+  const s = [...r0, ...v0];
+  const acc = (t, q) => {
+    const h = Math.max(T.siteAlt + q[2], 0), rho = atm(T, h).rho, g = G0 * (RE / (RE + h)) ** 2, wv = windV(q[2]);
+    const vx = q[3] - wv[0], vy = q[4] - wv[1], vz = q[5], V = Math.hypot(vx, vy, vz);
+    const tc = t - t0 - b.chuteDelay, ro = cds > 0 && tc >= 0 ? (open > 0 ? Math.min(1, tc / open) : 1) : 0;
+    const cda = ro > 0 ? cdaT * (1 - ro) + cds * ro : cdaT, k = 0.5 * rho * V * cda / m;
+    return { a: [-k * vx, -k * vy, -k * vz - g], ld: rho * cda * V / m };
+  };
+  let t = t0, tRec = t0, landing = null;
+  const snap = () => ({ t, x: s[0], y: s[1], z: s[2], V: Math.hypot(s[3], s[4], s[5]) });
+  const out = record ? [snap()] : [];
+  const release = { t, x: s[0], y: s[1], z: s[2], V: Math.hypot(s[3], s[4], s[5]) };
+  while (t < t0 + 1800) {
+    const a0 = acc(t, s), h = Math.min(0.02, a0.ld > 0 ? 0.5 / a0.ld : 0.02);
+    const mid = [s[0] + s[3] * h / 2, s[1] + s[4] * h / 2, s[2] + s[5] * h / 2, s[3] + a0.a[0] * h / 2, s[4] + a0.a[1] * h / 2, s[5] + a0.a[2] * h / 2];
+    const a1 = acc(t + h / 2, mid), zp = s[2], xp = s[0], yp = s[1], vp = [s[3], s[4], s[5]];
+    for (let j = 0; j < 3; j++) { s[j] += mid[3 + j] * h; s[3 + j] += a1.a[j] * h; }
+    t += h;
+    const g = gz(s[0], s[1]);
+    if (s[2] <= g) {
+      const f = (zp - g) / Math.max(zp - s[2], 1e-9);
+      s[0] = xp + f * (s[0] - xp); s[1] = yp + f * (s[1] - yp); s[2] = g; t = t - h + f * h;
+      landing = { t, x: s[0], y: s[1], V: Math.hypot(vp[0], vp[1], vp[2]), vz: vp[2] };
+      if (record) out.push(snap());
+      break;
+    }
+    if (record && t >= tRec + 0.1) { out.push(snap()); tRec = t; }
+  }
+  return { stage: b.no, release, rec: out, landing, error: landing ? undefined : '30分以内に着地しませんでした' };
+}
+
 // 飛行結果の要約（UI の結果カード・諸元表の「飛行結果」・落下分散の表と CSV で共通）。発生しなかった項目は NaN
 function flightSummary(M, sim) {
   const N = NaN, ev = (sim && sim.ev) || {}, st = (sim && sim.st) || {}, P = (sim && sim.payload) || null;
@@ -949,13 +1201,13 @@ function flightSummary(M, sim) {
   const brg = (x, y) => ((Math.atan2(x, y) / D2R) % 360 + 360) % 360;
   const RX = ev.railExit, BO = ev.burnout, D1 = ev.deploy1, D2 = ev.deploy2, PE = ev.payload, LD = ev.landing, PL = P && P.landing;
   const cdsP = M.payloadCdA, openN = PE ? PE.q * cdsP : N;
-  const ends = [LD && LD.t, PL && PL.t].filter(Number.isFinite);
+  const ends = [LD && LD.t, PL && PL.t, ...((sim && sim.drops) || []).map(d => d.landing && d.landing.t)].filter(Number.isFinite); // 切り離した段の着地も再生範囲に入れる
   return {
     railExit_t_s: RX ? RX.t : N, railExit_V_mps: RX ? RX.V : N, railExit_alphaW_deg: RX ? num(RX.alphaW) : N,
     maxV_mps: ev.liftoff ? num(asc.maxV) : N, maxV_t_s: num(asc.maxV_t), maxMach: ev.liftoff ? num(asc.maxMach) : N,
     maxQ_Pa: ev.liftoff ? num(asc.maxQ) : N, maxQ_t_s: num(asc.maxQ_t), maxAcc_G: ev.liftoff ? num(asc.maxG) : N,
     opEnd_t_s: BO ? BO.t : N, opEnd_z_m: BO ? BO.z : N, opEnd_V_mps: BO ? BO.V : N,
-    burnEnd_t_s: M.massMode === 'hybrid' ? M.tIgn + M.c.hBurnTime : M.tb,
+    burnEnd_t_s: M.massMode === 'hybrid' ? (M.topIgn ?? 0) + (M.top ? M.top.tIgn : M.tIgn) + M.c.hBurnTime * Math.max(M.c.burnScale, 1) / 100 : M.tb,
     apogee_m: ev.apogee ? num(st.apogee) : N, apogee_t_s: apoT, apogee_range_m: ev.apogee ? Math.hypot(st.apoX || 0, st.apoY || 0) : N,
     deploy1_t_s: D1 ? D1.t : N, deploy1_z_m: D1 ? D1.z : N, deploy1_Va_mps: D1 ? D1.V : N, deploy1_q_Pa: D1 ? D1.q : N,
     deploy1_dtApo_s: dtA(D1), deploy1_by: D1 && D1.by ? D1.by : N,

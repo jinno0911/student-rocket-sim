@@ -8,6 +8,7 @@ window.V3D = (() => {
   const box = document.getElementById('v3d');
   let renderer, scene, camera, controls, root, dirty = true, visible = false, ok = false;
   let sprites = [], rocket, flame, chute, dropLine, beacon, trailNow, ext = 500, visScale = 1, peakT = 1;
+  let boosters = [], dropObjs = [], cg0Top = 0;
   let pay = null;   // ペイロード {g: カプセル, chute, line: 軌跡, beacon, lbl}（放出が無ければ null）
   const qRoll = window.THREE ? new THREE.Quaternion() : null;
   const camSmooth = { pos: null, look: null };
@@ -198,8 +199,8 @@ window.V3D = (() => {
     const at = t => rec.find(q => q.t >= t) || rec[rec.length - 1];
     if (ev.burnout) mark(at(ev.burnout.t), '燃焼終了', PH_COL.pow);
     if (ev.apogee) mark(at(ev.apogee.t), `頂点 ${ev.apogee.z.toFixed(0)} m`, '#ffffff');
-    if (ev.deploy1 && !ev.deploy2?.beforeDeploy1) mark(at(ev.deploy1.t), '1段目開傘', PH_COL.c1, true);
-    if (ev.deploy2) mark(at(ev.deploy2.t), ev.deploy2.beforeDeploy1 ? '1・2段目 同時開傘' : '2段目開傘', PH_COL.c2);
+    if (ev.deploy1 && !ev.deploy2?.beforeDeploy1) mark(at(ev.deploy1.t), `${chuteName(1)}開傘`, PH_COL.c1, true);
+    if (ev.deploy2) mark(at(ev.deploy2.t), ev.deploy2.beforeDeploy1 ? `${chuteName(1)}・${chuteName(2)} 同時開傘` : `${chuteName(2)}開傘`, PH_COL.c2);
     if (ev.payload) mark(at(ev.payload.t), 'ペイロード放出', PH_COL.pay, true);
     if (ev.landing) {
       const ring = new THREE.Mesh(new THREE.RingGeometry(ext * 0.012, ext * 0.018, 32), new THREE.MeshBasicMaterial({ color: 0xff6b8b, side: THREE.DoubleSide }));
@@ -207,7 +208,7 @@ window.V3D = (() => {
       const l = label(`着地 ${Math.hypot(ev.landing.x, ev.landing.y).toFixed(0)} m`, '#ff6b8b'); l.position.copy(ring.position); root.add(l);
     }
     // 機体・パラ
-    const R = buildRocket(M); rocket = R.g; flame = R.flame;
+    const R = buildRocket(M.top || M); rocket = R.g; flame = R.flame;
     rocket.scale.setScalar(visScale); root.add(rocket);
     chute = buildChute().g; root.add(chute);
     // ペイロード（破線の軌跡・着地点・カプセル＋パラシュート）
@@ -232,6 +233,27 @@ window.V3D = (() => {
       pay = { g, chute: pc.g, line, beacon: pb, lbl, n: prec.length };
     }
     peakT = Math.max(...M.pts.map(p => p[1]), 1);
+    // 多段: 下段ブースタ（機体の子）と、切り離した段の落下
+    boosters = []; dropObjs = []; cg0Top = (M.top || M).massAt(0).cg;
+    if (M.stack) {
+      M.stack.stages.forEach(b => { const g = buildBooster(b, cg0Top); rocket.add(g); boosters.push(g); });
+      (sim.drops || []).forEach(d => {
+        const b = M.stack.stages[d.stage - 1], g = buildBooster(b, b.x0 + b.xDry); g.scale.setScalar(visScale); root.add(g);
+        const PP = []; for (const q of d.rec) { const v = V(q.x, q.y, q.z); PP.push(v.x, v.y, v.z); }
+        const pg = new THREE.BufferGeometry(); pg.setAttribute('position', new THREE.Float32BufferAttribute(PP, 3));
+        const mat = op => new THREE.LineDashedMaterial({ color: 0x7fc4d9, dashSize: ext * 0.006, gapSize: ext * 0.008, transparent: true, opacity: op });
+        const ghost = new THREE.Line(pg, mat(0.3)); ghost.computeLineDistances(); root.add(ghost);
+        const line = new THREE.Line(pg.clone(), mat(1)); line.computeLineDistances(); root.add(line);
+        if (d.landing) {
+          const ring = new THREE.Mesh(new THREE.RingGeometry(ext * 0.008, ext * 0.012, 32), new THREE.MeshBasicMaterial({ color: 0x7fc4d9, side: THREE.DoubleSide }));
+          ring.rotation.x = -Math.PI / 2; ring.position.copy(V(d.landing.x, d.landing.y, 0.6)); root.add(ring);
+          const l = label(`${d.stage}段目 落下 ${Math.hypot(d.landing.x, d.landing.y).toFixed(0)} m`, '#7fc4d9'); l.position.copy(ring.position); root.add(l);
+        }
+        const bc = new THREE.Sprite(new THREE.SpriteMaterial({ map: dotTex(), color: 0x7fc4d9, sizeAttenuation: false, depthTest: false, transparent: true }));
+        bc.scale.set(0.016, 0.016, 1); bc.userData.base = bc.scale.clone(); sprites.push(bc); bc.renderOrder = 11; root.add(bc);
+        dropObjs.push({ d, g, line, beacon: bc });
+      });
+    }
     // 落下線とビーコン（遠くても位置が分かるように）
     const dg = new THREE.BufferGeometry(); dg.setAttribute('position', new THREE.Float32BufferAttribute([0, 0, 0, 0, 0, 0], 3));
     dropLine = new THREE.Line(dg, new THREE.LineDashedMaterial({ color: 0xffd36b, dashSize: ext * 0.01, gapSize: ext * 0.01, transparent: true, opacity: 0.5 }));
@@ -279,11 +301,42 @@ window.V3D = (() => {
     o.ph = a.ph;
     return o;
   }
+  // 下段ブースタのメッシュ（機軸 +Y。cgRef = 原点に置く位置 [先端基準 m]）
+  function buildBooster(b, cgRef) {
+    const g = new THREE.Group(), m = c => new THREE.MeshStandardMaterial({ color: c, roughness: 0.5, metalness: 0.1, side: THREE.DoubleSide });
+    const body = new THREE.Mesh(new THREE.CylinderGeometry(b.R, b.R, b.L, 28), m(0xc9d6e4));
+    body.position.y = cgRef - b.x0 - b.L / 2; g.add(body);
+    if (b.sp > 0) {
+      const xr = b.x0 + b.L - b.finAft - b.Cr, sh = new THREE.Shape();
+      sh.moveTo(b.R * 0.98, cgRef - xr); sh.lineTo(b.R + b.sp, cgRef - xr - b.Xs); sh.lineTo(b.R + b.sp, cgRef - xr - b.Xs - b.Ct); sh.lineTo(b.R * 0.98, cgRef - xr - b.Cr); sh.closePath();
+      const th = Math.max(b.finThick, 0.001), fg = new THREE.ExtrudeGeometry(sh, { depth: th, bevelEnabled: false }); fg.translate(0, 0, -th / 2);
+      for (let i = 0; i < b.N; i++) { const f = new THREE.Mesh(fg, m(0x2f7f9f)); f.rotation.y = 2 * Math.PI * i / b.N; g.add(f); }
+    }
+    return g;
+  }
+  function updateStack(r) {
+    if (!boosters.length) return;
+    const st = model.stack; let bottom = model.top.L;
+    boosters.forEach((g, i) => { const on = playT < st.sep[i]; g.visible = on; if (on) bottom = Math.max(bottom, st.stages[i].x0 + st.stages[i].L); });
+    flame.position.y = cg0Top - bottom - (bottom === model.top.L ? cfg.mOver / 1000 : 0);
+  }
+  function updateDrops(time) {
+    dropObjs.forEach(o => {
+      const q = dropAt(o.d, playT), vis = !!q;
+      o.g.visible = o.beacon.visible = vis;
+      let n = 0; while (n < o.d.rec.length && o.d.rec[n].t <= playT) n++;
+      o.line.geometry.setDrawRange(0, n);
+      if (!vis) return;
+      const p = V(q.x, q.y, q.z); o.g.position.copy(p); o.beacon.position.copy(p);
+      if (o.d.landing && playT >= o.d.landing.t) o.g.rotation.set(Math.PI / 2, 0, 0); else o.g.rotation.set(time * 0.002, 0, time * 0.0013); // 落下中はタンブリング
+    });
+  }
   function update(time) {
     const r = sample();
     const p = V(r.x, r.y, r.z);
     trailNow.geometry.setDrawRange(0, playIdx + 1);
     rocket.position.copy(p);
+    updateStack(r); updateDrops(time);
     const k = phKey(r), ev = sim.ev;
     let axis;
     if (r.ph === 2) {
@@ -307,6 +360,7 @@ window.V3D = (() => {
     }
     // 機軸に向けてからロール角だけ機軸まわりに回す（φ は mod 2π しない値。ph 2 では最後の値のまま）
     rocket.quaternion.setFromUnitVectors(Y_UP, axis).multiply(qRoll.setFromAxisAngle(Y_UP, Number.isFinite(r.roll) ? r.roll : 0));
+    if (model.stack && r.ph !== 2 && Number.isFinite(r.cg)) rocket.position.addScaledVector(axis, (r.cg - cg0Top) * visScale); // 記録の位置は今の構成の重心
     updatePayload(time);
     const pos = dropLine.geometry.attributes.position;
     pos.setXYZ(0, p.x, p.y, p.z); pos.setXYZ(1, p.x, 0, p.z); pos.needsUpdate = true; dropLine.computeLineDistances();

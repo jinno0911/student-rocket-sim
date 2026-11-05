@@ -8,6 +8,7 @@ self.onmessage = e => {
   catch (err) { self.postMessage({ id, r: { ok: false, err: String(err && err.message || err) } }); }
 };
 // analysis.js と同じ関数（ワーカー内で使うため複製しない: analysis.js は runCase を文字列化せず、同じ定義をここに持つ）
+const dropXY = (s, no) => { const d = (s.drops || []).find(q => q.stage === no); return d && d.landing ? [d.landing.x, d.landing.y] : null; };
 function runCase(cfg, hard) {
   const M = buildModel(cfg), s = simulate(M, { seed: cfg.__seed || 1, record: false });
   const f = flightSummary(M, s), L = s.ev.landing, P = s.payload && s.payload.landing;
@@ -15,6 +16,7 @@ function runCase(cfg, hard) {
     ok: !s.ev.error && !!L, err: s.ev.error || null,
     apogee: f.apogee_m, railV: f.railExit_V_mps, maxV: f.maxV_mps, maxMach: f.maxMach, maxQ: f.maxQ_Pa, apoT: f.apogee_t_s,
     soft: L ? [L.x, L.y] : null, pay: P ? [P.x, P.y] : null, hard: null,
+      b1: dropXY(s, 1), b2: dropXY(s, 2),
   };
   if (hard) {
     const sh = simulate(M, { seed: cfg.__seed || 1, record: false, ballistic: true });

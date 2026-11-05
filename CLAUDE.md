@@ -3,6 +3,7 @@
 - 構成: `physics.js`（物理コア・DOM 非依存）/ `specsheet.js`（諸元表 xlsx, window.SpecSheet）/ `dispersion.js`（落下分散, window.Dispersion）/ `app.js`（UI）/ `view3d.js`（3D, window.V3D）。読込順はこの順（physics → specsheet → dispersion → app → view3d）
 - Magi（C++ のハイブリッドロケット軌道シミュレータ）から移植したモジュール: `geo.js`（WMM2025・Vincenty・正規重力, window.Geo）/ `terrain.js`（国土地理院 標高タイル, window.Terrain）/ `analysis.js` + `analysis-worker.js`（並列 MC・ラプラス近似・EKF・閾値・KML, window.Analysis）/ `verify.js`（検算, window.Verify）/ `design.js`（フィン最適化・パラシュート設計, window.Design）。読込順は geo → terrain → physics → specsheet → dispersion → analysis → verify → design → app → view3d
 - 追加 cfg キー（magMode, launchDate, earthRot, tipOff, lugUpper, windModel, windProfile, windMaxH, ばらつき補正 cnaScale/burnScale/cgShift/cpShift/chuteScale/chuteDelay, 閾値 th*）は既定で従来と同じ挙動
+- 多段式: cfg の stageCount（1〜3）と b1*/b2* キー（b1 = 最下段）。既存の機体入力は最上段。stageCount > 1 の buildModel は buildStack の戻り（M.top = 最上段、M.stack = {stages, segs, ign, sep, topIgn}、M.massAt/thrust は最初の点火からの全体時刻）。simulate は simulateStaged が段ごとに simulateCore（opt.tStart/init/stopAt）をつなぐ。切り離した段は sim.drops、段のイベントは ev.stages。reviewValues・諸元表は最上段の値、段構成は stageTable(M)
 - ヘッドレス Chrome の仮想時間は Web Worker を待たない → ワーカーを使うテストは `?noworker`（window.ANALYSIS_NO_WORKER）で本スレッド実行
 - sw.js は同一オリジンを cache:'no-cache' で再検証する（更新時に古い app.js が混ざる事故の対策）
 - **ファイル間の契約は `docs/spec-v2.md`**（cfg キー・単位・関数・予約名）。キーを足すときは physics.js の PHYS_DEFAULTS と app.js の SCHEMA の両方

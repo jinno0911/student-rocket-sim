@@ -116,3 +116,9 @@ button:disabled,.btn.disabled{opacity:.45;cursor:not-allowed}
 .rv-row .rv-u{width:44px;flex:none;color:var(--muted);font-size:11px}
 .rv-row.sub{opacity:.6}
 .rv-row.key .rv-l,.rv-row.key .rv-v{color:var(--blue)}
+details.hide{display:none}
+.stage-t{border-collapse:collapse;font-size:12px;width:100%}
+.stage-t th,.stage-t td{border-bottom:1px solid var(--line);padding:3px 8px;text-align:right;white-space:nowrap;color:var(--fg)}
+.stage-t th{color:var(--muted);font-weight:500}
+.stage-t th:first-child,.stage-t td:first-child{text-align:left}
+.stage-t td.stage-bad{color:var(--red);font-weight:700}

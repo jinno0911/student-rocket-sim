@@ -602,9 +602,10 @@ window.SpecSheet = (() => {
     if (typeof normalizeCfg !== 'function' || typeof buildModel !== 'function') throw jpErr('physics.js が読み込まれていないため書き出せません');
     const X = await loadXLSX();
     const c = baseOf(cfg);
-    const M = model && typeof model.massAt === 'function' ? model : buildModel(c);
+    const MF = model && typeof model.massAt === 'function' ? model : buildModel(c);
     let S = sim;
-    if (!S?.ev && typeof simulate === 'function') { try { S = simulate(M); } catch (e) { S = null; } }
+    if (!S?.ev && typeof simulate === 'function') { try { S = simulate(MF); } catch (e) { S = null; } }
+    const M = MF.top || MF; // 団体入力シートと推力履歴は最上段（下段は「シミュレータ追加諸元」に入る）
     let rv = null;
     try { if (typeof reviewValues === 'function') rv = reviewValues(M); } catch (e) { rv = null; }
     const warnings = [], warn = s => { if (s && !warnings.includes(s)) warnings.push(s); };

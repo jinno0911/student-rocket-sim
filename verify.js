@@ -7,7 +7,7 @@ window.Verify = (() => {
   const ST = { pass: ['合格', '#7ee787'], warn: ['注意', '#ffd36b'], fail: ['不合格', '#ff6b8b'], info: ['参考', '#8c9bbd'] };
   const fin = v => typeof v === 'number' && Number.isFinite(v);
   const f = (v, d = 3) => (fin(v) ? (+v.toPrecision(d + 3)).toString() : '—');
-  const esc = s => String(s).replace(/[&<>"]/g, c => ({ '&': '&amp;', '<': '&lt;', '>': '&gt;', '"': '&quot;' }[c]));
+  const esc = s => String(s).replace(/[&<>]/g, c => ({ '&': '&amp;', '<': '&lt;', '>': '&gt;' }[c]));
 
   function run(base) {
     const items = [], t0 = performance.now();
@@ -53,7 +53,7 @@ window.Verify = (() => {
       if (cP.rec1 === 'none' || !(MP.c1CdA > 0)) add(G1, 'パラシュート終端降下速度', '-', '-', '-', 'info', '回収系が無いため省略');
       else if (!L) add(G1, 'パラシュート終端降下速度', '-', '-', '-', 'info', '着地まで計算できなかったため省略');
       else {
-        const two = !!sP.ev.deploy2, cda = MP.chuteVel ? (two ? MP.c2CdA : MP.c1CdA) : MP.A * MP.cd0 + MP.c1CdA + (two ? MP.c2CdA : 0);
+        const TP = MP.top || MP, two = !!sP.ev.deploy2, cda = MP.chuteVel ? (two ? MP.c2CdA : MP.c1CdA) : TP.A * TP.cd0 + MP.c1CdA + (two ? MP.c2CdA : 0);
         const rho = atm(MP, MP.siteAlt).rho, m = MP.massAt(L.t).m, vt = Math.sqrt(2 * m * gH(MP.siteAlt) / (rho * cda));
         rel(G1, `パラシュート終端降下速度（${two ? '2段目' : '1段目'}、着地時）`, vt, Math.abs(L.vz), 'm/s', 0.01, 0.03, '√(2mg/ρ·CdA)、ρ は射点の大気密度。展開直後で平衡に達していないと差が出ます');
       }
@@ -72,7 +72,7 @@ window.Verify = (() => {
       let I = 0; for (let i = 1; i < pw.length; i++) I += (pw[i].T + pw[i - 1].T) / 2 * (pw[i].t - pw[i - 1].t);
       rel(G2, '力積 ∫T dt（記録値の台形積分）', MA.Itot, I, 'N·s', 0.01, 0.03, '記録は 0.02 s 間隔のため曲線の細部で差が出ます');
       const m0 = MA.massAt(0).m, m1 = MA.massAt(MA.tEnd).m;
-      rel(G2, '質量収支 m(0) − m(終了)', MA.prop, m0 - m1, 'kg', 1e-9, 1e-6, '推進剤質量（hybrid は酸化剤＋消費燃料）と一致するか');
+      rel(G2, '質量収支 m(0) − m(終了)', MA.prop + (MA.massDropped || 0), m0 - m1, 'kg', 1e-9, 1e-6, MA.stack ? '全段の推進剤＋切り離した段の質量と一致するか' : '推進剤質量（hybrid は酸化剤＋消費燃料）と一致するか');
       const isp = MA.Itot / (G0 * MA.prop);
       add(G2, '比推力 Isp = I/(g₀·Δm)', '40〜400 s の範囲', `${f(isp, 4)} s`, '-', isp >= 40 && isp <= 400 ? 'pass' : 'warn', '推力曲線と推進剤質量の整合（固体 80〜250 s、ハイブリッド 100〜250 s 程度）');
     }
@@ -80,7 +80,7 @@ window.Verify = (() => {
     {
       const cV = normalizeCfg({ ...base, ...clean }), MV = buildModel(cV), sV = simulate(MV, { seed: 1, record: false });
       const fdrag = (t, z, v) => {
-        const at = atm(MV, Math.max(MV.siteAlt + z, 0)), D = 0.5 * at.rho * v * Math.abs(v) * MV.A * MV.cdAt(Math.abs(v) / at.a);
+        const at = atm(MV, Math.max(MV.siteAlt + z, 0)), mn = Math.abs(v) / at.a, D = 0.5 * at.rho * v * Math.abs(v) * (MV.cdaAt ? MV.cdaAt(t, mn) : MV.A * MV.cdAt(mn));
         const a = (MV.thrust(t, z) - D) / MV.massAt(t).m - gH(MV.siteAlt + z);
         return v <= 0 && z <= 0 && a < 0 ? 0 : a;
       };
@@ -133,7 +133,7 @@ window.Verify = (() => {
       const cnf = (1 + R / (s + R)) * nf * 4 * N * (s / d) ** 2 / (1 + Math.sqrt(1 + (2 * lm / (cr + ct)) ** 2));
       parts.push([cnf, xb + xs / 3 * (cr + 2 * ct) / (cr + ct) + (cr + ct - cr * ct / (cr + ct)) / 6]);
       const cn = parts.reduce((a, p) => a + p[0], 0), xcp = parts.reduce((a, p) => a + p[0] * p[1], 0) / cn;
-      const Mb = buildModel(normalizeCfg({ ...base, aeroMode: 'barrowman', aeroTable: '', cnaScale: 100, cpShift: 0 })), cb = Mb.cpAt(0);
+      const Mb = buildModel(normalizeCfg({ ...base, stageCount: 1, aeroMode: 'barrowman', aeroTable: '', cnaScale: 100, cpShift: 0 })), cb = Mb.cpAt(0); // 再計算は最上段の形状で
       rel(G4, 'Barrowman 再計算: CNα', cn, cb.cna, '1/rad', 1e-6, 1e-3, '機体形状から独立に書いた式で再計算');
       rel(G4, 'Barrowman 再計算: 圧力中心（先端から）', xcp * 1000, cb.xcp * 1000, 'mm', 1e-6, 1e-3, '同上');
       if (base.aeroMode === 'manual') {

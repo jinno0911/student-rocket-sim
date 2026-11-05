@@ -61,7 +61,8 @@ window.Design = (() => {
   }
 
   // 現在の cfg・モデルから評価用の文脈を作る
-  function context(c, M, opt) {
+  function context(c, M0, opt) {
+    const M = M0.top || M0; // 多段式は最上段のフィンを設計する
     const mm = 1e-3, L = M.L, D = M.d, R = D / 2, G = window.Geo;
     const ms = opt.state === 'dry' ? M.massAt(M.tEnd) : M.massAt(0); // dry = 燃焼終了時
     const t = c.finThick * mm;

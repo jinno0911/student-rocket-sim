@@ -17,11 +17,39 @@ const SCHEMA = (() => {
   const dia = c => c.chuteSpec !== 'velocity', vel = c => c.chuteSpec === 'velocity';
   const ref = c => c === 'magnetic' ? '磁北基準' : '真北基準';
   const REF = [['true', '真北'], ['magnetic', '磁北']];
+  // 下段ブースタの入力欄（位置はその段の前端から）
+  const boosterGroup = (p, group, show) => ({ group, show, fields: [
+    { k: p + 'Len', l: '段の長さ', u: 'mm', min: 10, step: 10 },
+    { k: p + 'D', l: '段の外径', u: 'mm', min: 5, step: 1 },
+    { k: p + 'Mass', l: '質量（推進剤を除く）', u: 'g', min: 1, step: 10 },
+    { k: p + 'CG', l: '重心（段の前端から）', u: 'mm', min: 0, step: 5 },
+    { k: p + 'Prop', l: '推進剤質量', u: 'g', min: 0, step: 10 },
+    { k: p + 'PropCG', l: '推進剤の重心（段の前端から）', u: 'mm', min: 0, step: 5 },
+    { k: p + 'Src', l: '推力データ', t: 'select', wide: true, o: [['param', 'パラメトリック'], ['eng', '推力表を貼付（.eng / t,F）']] },
+    { k: p + 'I', l: '総力積', u: 'N·s', min: 0.1, step: 10, show: c => c[p + 'Src'] === 'param' },
+    { k: p + 'Tb', l: '燃焼時間', u: 's', min: 0.05, step: 0.1, show: c => c[p + 'Src'] === 'param' },
+    { k: p + 'Shape', l: '推力形状', t: 'select', wide: true, o: SHAPES, show: c => c[p + 'Src'] === 'param' },
+    { k: p + 'Eng', l: '推力表（1行 = 時刻s 推力N）', t: 'textarea', rows: 4, show: c => c[p + 'Src'] === 'eng' },
+    { k: p + 'SepDelay', l: '燃焼終了〜分離', u: 's', min: 0, step: 0.1 },
+    { k: p + 'IgnDelay', l: '分離〜次段の点火', u: 's', min: 0, step: 0.1 },
+    { k: p + 'FinN', l: 'フィン枚数', min: 2, max: 8, step: 1 },
+    { k: p + 'FinCr', l: '翼根コード', u: 'mm', min: 1, step: 5 },
+    { k: p + 'FinCt', l: '翼端コード', u: 'mm', min: 0, step: 5 },
+    { k: p + 'FinSpan', l: 'スパン', u: 'mm', min: 0, step: 5 },
+    { k: p + 'FinSweep', l: '前縁後退長', u: 'mm', step: 5 },
+    { k: p + 'FinAft', l: '翼根後縁〜段の後端', u: 'mm', step: 5 },
+    { k: p + 'FinThick', l: 'フィン厚さ', u: 'mm', min: 0.1, step: 0.5 },
+    { k: p + 'Vt', l: '落下時の終端速度（0=パラなし）', u: 'm/s', min: 0, step: 1 },
+    { k: p + 'ChuteDelay', l: '分離〜開傘', u: 's', min: 0, step: 0.5, show: c => c[p + 'Vt'] > 0 },
+  ] });
   return [
     { group: '基本', open: true, fields: [
       { k: 'name', l: '機体名', t: 'text', wide: true },
       { k: 'posRef', l: '位置の表示基準', t: 'select', wide: true, o: [['nose', '機体先端から'], ['aft', '機体後端から（諸元表の様式）']] },
+      { k: 'stageCount', l: '段数（多段式では下の機体・モーター・回収系が最上段）', t: 'select', wide: true, o: [['1', '1 段式'], ['2', '2 段式'], ['3', '3 段式']], num: true },
     ] },
+    boosterGroup('b1', '下段ブースタ: 1段目（最初に点火）', c => c.stageCount >= 2),
+    boosterGroup('b2', '下段ブースタ: 2段目（3 段式の中段）', c => c.stageCount >= 3),
     { group: '機体', open: true, fields: [
       { k: 'noseShape', l: 'ノーズ形状', t: 'select', o: [['ogive', 'オジャイブ'], ['cone', 'コーン'], ['parabolic', '放物線'], ['elliptic', '楕円']] },
       { k: 'noseLen', l: 'ノーズ長', u: 'mm', min: 5, step: 5 },
@@ -82,7 +110,7 @@ const SCHEMA = (() => {
       { k: 'thrustScale', l: '推力倍率（気温・個体差）', u: '%', min: 1, step: 1 },
       { k: 'nozzleExitD', l: 'ノズル出口直径（0=圧力推力補正なし）', u: 'mm', min: 0, step: 1 },
     ] },
-    { group: '回収系', fields: [
+    { group: '回収系（多段式では最上段）', fields: [
       { k: 'rec1', l: '1段目の開傘条件', t: 'select', wide: true, o: [['apogee', '頂点検知'], ['ignition', '点火からのタイマー'], ['burnout', '作動終了からのタイマー'], ['none', 'なし（弾道落下）']] },
       { k: 'rec1Time', l: 'タイマー時間', u: 's', min: 0, step: 0.5, show: c => c.rec1 === 'ignition' || c.rec1 === 'burnout' },
       { k: 'rec1Delay', l: '頂点検知の遅れ', u: 's', min: 0, step: 0.1, show: apo },
@@ -289,6 +317,7 @@ function buildPanel() {
   for (const g of SCHEMA) {
     const det = document.createElement('details'); det.open = !!g.open;
     det.innerHTML = `<summary>${g.group}</summary>`;
+    g.el = det;
     const grid = document.createElement('div'); grid.className = 'fields';
     for (const f of g.fields) {
       const wrap = document.createElement('label');
@@ -329,6 +358,7 @@ function writeFields(skip) {
   refreshVisibility(); refreshLabels();
 }
 function refreshVisibility() {
+  for (const g of SCHEMA) if (g.show && g.el) { const v = g.show(cfg); if (v && g.el.classList.contains('hide')) g.el.open = true; g.el.classList.toggle('hide', !v); }
   for (const f of FIELDS) if (f.show) $(`.field[data-k="${f.k}"]`).classList.toggle('hide', !f.show(cfg));
 }
 function refreshLabels() {
@@ -389,10 +419,11 @@ function renderAll() {
 
 // ---- 機体図 ----
 function drawRocket() {
-  const cv = $('#cvRocket'), { ctx, w, h } = prep(cv), M = model;
-  if (!M) return;
-  const xEnd = Math.max(M.L, M.L + cfg.mOver / 1000, M.Xb + Math.max(M.Cr, M.Xs + M.Ct));
-  const halfH = M.R + M.s;
+  const cv = $('#cvRocket'), { ctx, w, h } = prep(cv), F = model;
+  if (!F) return;
+  const M = F.top || F, ST = F.stack ? F.stack.stages : [];   // 機体の輪郭は最上段、その下に下段ブースタを描く
+  const xEnd = Math.max(F.L, M.L + cfg.mOver / 1000, M.Xb + Math.max(M.Cr, M.Xs + M.Ct));
+  const halfH = Math.max(M.R + M.s, ...ST.map(b => b.R + b.sp));
   const sc = Math.min((w - 40) / xEnd, (h - 56) / (2 * halfH));
   const ox = 20, oy = h / 2 + 6;
   const X = x => ox + x * sc, Y = r => oy - r * sc;
@@ -414,13 +445,25 @@ function drawRocket() {
   // モーター
   ctx.setLineDash([4, 3]); ctx.strokeStyle = '#ff9b3d';
   ctx.strokeRect(X(M.motorX - M.mLen / 2), Y(M.mDia / 2), M.mLen * sc, M.mDia * sc); ctx.setLineDash([]);
+  // 下段ブースタ
+  for (const b of ST) {
+    ctx.fillStyle = '#1c3a4a'; ctx.strokeStyle = '#7fc4d9'; ctx.lineWidth = 1.2;
+    ctx.fillRect(X(b.x0), Y(b.R), b.L * sc, b.d * sc); ctx.strokeRect(X(b.x0), Y(b.R), b.L * sc, b.d * sc);
+    const xr = b.x0 + b.L - b.finAft - b.Cr;
+    if (b.sp > 0) for (const sgn of [1, -1]) {
+      ctx.beginPath(); ctx.moveTo(X(xr), Y(sgn * b.R)); ctx.lineTo(X(xr + b.Xs), Y(sgn * (b.R + b.sp)));
+      ctx.lineTo(X(xr + b.Xs + b.Ct), Y(sgn * (b.R + b.sp))); ctx.lineTo(X(xr + b.Cr), Y(sgn * b.R)); ctx.closePath();
+      ctx.fillStyle = '#2d6078'; ctx.fill(); ctx.stroke();
+    }
+    ctx.fillStyle = '#9fd3e6'; ctx.font = '11px system-ui'; ctx.textAlign = 'center'; ctx.fillText(`${b.no}段目`, X(b.x0 + b.L / 2), Y(0) + 4);
+  }
   // バラスト
   if (cfg.ballast > 0) { ctx.fillStyle = '#c9a227'; ctx.beginPath(); ctx.arc(X(cfg.ballastPos / 1000), Y(0), 4, 0, 7); ctx.fill(); }
   // ペイロード（重心位置に □）
   if (M.payloadOn ?? cfg.payloadOn) { ctx.strokeStyle = PH_COL.pay; ctx.lineWidth = 2; ctx.strokeRect(X(cfg.payloadPos / 1000) - 5, Y(0) - 5, 10, 10); }
   // CG / CP
-  const m0 = M.massAt(0), m1 = M.massAt(M.tEnd), cp = M.cpAt(0);
-  const pl = x => f0(posDisp(x * 1000));   // 表示は posRef に合わせる
+  const m0 = F.massAt(0), m1 = F.massAt(F.tEnd), cp = F.cpAt(0);
+  const pl = x => f0(F.stack ? x * 1000 : posDisp(x * 1000));   // 表示は posRef に合わせる（多段は全段の先端基準）
   const mark = (x, col, label, up, hollow) => {
     const px = X(x), py = Y(0);
     ctx.lineWidth = 2; ctx.strokeStyle = col; ctx.fillStyle = col;
@@ -431,15 +474,21 @@ function drawRocket() {
     ctx.fillText(label, px, ty);
   };
   mark(m0.cg, '#7aa2ff', `CG ${pl(m0.cg)}`, true);
-  mark(m1.cg, '#7aa2ff', `燃焼後 ${pl(m1.cg)}`, false, true);
+  mark(m1.cg, '#7aa2ff', `${F.stack ? '最上段 ' : ''}燃焼後 ${pl(m1.cg)}`, false, true);
   mark(cp.xcp, '#ff6b8b', `CP ${pl(cp.xcp)}`, true);
   ctx.fillStyle = CHART_CSS.text; ctx.textAlign = 'left'; ctx.font = '11px system-ui';
-  ctx.fillText(`全長 ${(M.L * 1000).toFixed(0)} mm  /  単位: mm（${cfg.posRef === 'aft' ? '後端' : '先端'}基準）`, 8, 14);
+  ctx.fillText(`全長 ${(F.L * 1000).toFixed(0)} mm  /  単位: mm（${F.stack ? '全段の先端' : cfg.posRef === 'aft' ? '後端' : '先端'}基準）`, 8, 14);
 }
 function renderStatic() {
   const M = model; if (!M) { $('#staticInfo').innerHTML = ''; return; }
   const m0 = M.massAt(0), m1 = M.massAt(M.tEnd), cp = M.cpAt(0);
   const sm0 = (cp.xcp - m0.cg) / M.d, sm1 = (cp.xcp - m1.cg) / M.d;
+  const tbl = stageTable(M);
+  if (tbl) { // 多段: 段構成ごとの質量・安定性
+    $('#staticInfo').innerHTML = `<div style="overflow-x:auto;width:100%"><table class="stage-t"><tr><th>段構成</th><th>質量 [kg]</th><th>全長 [mm]</th><th>安定余裕 [cal]</th><th>Fst [%]</th><th>推力重量比</th></tr>${
+      tbl.map(r => `<tr><td>${r.label}</td><td>${r.m.toFixed(2)}</td><td>${(r.L * 1000).toFixed(0)}</td><td class="${r.sm < 1 ? 'stage-bad' : ''}">${r.sm.toFixed(2)}</td><td>${r.fst.toFixed(1)}</td><td>${r.twr > 0 ? r.twr.toFixed(1) : '—'}</td></tr>`).join('')}</table></div>`;
+    return;
+  }
   $('#staticInfo').innerHTML = [
     ['離陸質量', (m0.m * 1000).toFixed(0) + ' g'], ['燃焼後質量', (m1.m * 1000).toFixed(0) + ' g'],
     ['CNα', cp.cna.toFixed(2)], ['静安定余裕', `${sm0.toFixed(2)} → ${sm1.toFixed(2)} cal`],
@@ -450,7 +499,7 @@ function renderMotorInfo() {
   const M = model, el = $('#motorInfo'); if (!M || !el) return;
   const avg = M.tb > 0 ? M.Itot / M.tb : 0, peak = Math.max(...M.pts.map(p => p[1]));
   const tw = peak / (M.massAt(0).m * G0), twAvg = avg / (M.massAt(0).m * G0);
-  el.innerHTML = `<b>${motorClass(M.Itot)}</b> クラス${M.mName ? '（' + escHtml(M.mName) + '）' : ''} ／ 総力積 <b>${M.Itot.toFixed(1)}</b> N·s ／ 燃焼 <b>${M.tb.toFixed(2)}</b> s<br>
+  el.innerHTML = `<b>${motorClass(M.Itot)}</b> クラス${M.mName ? '（' + M.mName + '）' : ''} ／ 総力積 <b>${M.Itot.toFixed(1)}</b> N·s ／ 燃焼 <b>${M.tb.toFixed(2)}</b> s<br>
     平均 <b>${avg.toFixed(0)}</b> N・最大 <b>${peak.toFixed(0)}</b> N ／ 推力重量比 平均 <b>${twAvg.toFixed(1)}</b>・最大 <b>${tw.toFixed(1)}</b>`;
 }
 
@@ -515,15 +564,17 @@ function renderResults() {
     card('安定余裕', f2(ev.railExit?.sm), ' cal', `飛行中最小 ${f2(st.minSM)}`),
     card('最大迎角', f1(st.maxAlpha), '°', st.maxRollRate * 30 / Math.PI >= 0.5 ? `最大ロール ${f0(st.maxRollRate * 30 / Math.PI)} rpm` : ''),
     card('作動終了時', f0(S.opEnd_V_mps), ' m/s', `T+${f2(S.opEnd_t_s)} s ／ 高度 ${f0(S.opEnd_z_m)} m`),
-    card(has('deploy2_t_s') ? '1段目開傘 対気速度' : '開傘時対気速度', f1(S.deploy1_Va_mps), ' m/s',
+    card(has('deploy2_t_s') ? `${chuteName(1)}開傘 対気速度` : '開傘時対気速度', f1(S.deploy1_Va_mps), ' m/s',
       has('deploy1_t_s') ? `高度 ${f0(S.deploy1_z_m)} m ／ ${dA(S.deploy1_dtApo_s)}${S.deploy1_by === 'timer' && cfg.rec1 === 'apogee' ? '（冗長タイマー）' : ''}` : '開傘なし'),
   ];
-  if (has('deploy2_t_s')) cards.push(card('2段目開傘 対気速度', f1(S.deploy2_Va_mps), ' m/s', `高度 ${f0(S.deploy2_z_m)} m ／ ${dA(S.deploy2_dtApo_s)}`));
+  if (has('deploy2_t_s')) cards.push(card(`${chuteName(2)}開傘 対気速度`, f1(S.deploy2_Va_mps), ' m/s', `高度 ${f0(S.deploy2_z_m)} m ／ ${dA(S.deploy2_dtApo_s)}`));
   cards.push(
-    card('着地時降下速度', f1(Math.abs(S.landing_vz_mps)), ' m/s', (has('deploy2_t_s') ? `1段目 ${f1(S.descent1_mps)} ／ ` : '') + `対地 ${f1(S.landing_V_mps)} m/s`),
+    card('着地時降下速度', f1(Math.abs(S.landing_vz_mps)), ' m/s', (has('deploy2_t_s') ? `${chuteName(1)} ${f1(S.descent1_mps)} ／ ` : '') + `対地 ${f1(S.landing_V_mps)} m/s`),
     card('落下距離', f0(S.landing_dist_m), ' m', has('landing_t_s') ? `方位 ${f0(S.landing_brgTrue_deg)}°（真北）` : ''),
     card('飛行時間', f1(S.landing_t_s), ' s', S.flightEnd_t_s > S.landing_t_s + 1e-9 ? `ペイロード着地まで ${f1(S.flightEnd_t_s)} s` : `作動時間 ${f2(S.opEnd_t_s)} s`),
   );
+  for (const e of ev.stages || []) if (e.stage > 1 && e.ign) cards.push(card(`${e.stage}段目 点火`, f0(e.ign.z), ' m', `T+${f1(e.ign.t)} s ／ ${f0(e.ign.V)} m/s ／ 鉛直から ${f1(e.ign.tilt)}°`));
+  for (const d of sim.drops || []) cards.push(card(`${d.stage}段目 落下距離`, f0(d.landing ? Math.hypot(d.landing.x, d.landing.y) : NaN), ' m', d.landing ? `T+${f1(d.landing.t)} s ／ 降下 ${f1(Math.abs(d.landing.vz))} m/s` : '着地なし'));
   if (cfg.payloadOn) {
     cards.push(
       card('ペイロード放出 対気速度', f1(S.payload_Va_mps), ' m/s', has('payload_t_s')
@@ -553,7 +604,18 @@ function renderWarnings() {
   if (fst.length && fMin < 10) add(fMin < 0 ? 'bad' : 'warn', `${fMin < 0 ? '⛔' : '⚠'} Fst が小さい（${fst.map(([l, v]) => `${l} ${v.toFixed(1)} %`).join('、')}。目安 10 % 以上）`);
   if (ev.railExit && ev.railExit.V < 15) add('warn', `⚠ ランチクリア速度が低い（${ev.railExit.V.toFixed(1)} m/s、目安 15〜20 m/s 以上）`);
   if (S.railExit_alphaW_deg > 15) add('warn', `⚠ ランチクリア時の横風迎角が大きい（${S.railExit_alphaW_deg.toFixed(1)}°、目安 15° 以下）。風見効果で風上へ大きく向きます`);
-  const tw = M.Itot / Math.max(M.tb, 1e-6) / (m0.m * G0);
+  const stT = stageTable(M);
+  if (stT) { // 多段: 全ての段構成の安定性と、上段の点火姿勢・速度
+    for (const r of stT) if (r.sm < 0) add('bad', `⛔ ${r.label}: 静的に不安定です（安定余裕 ${r.sm.toFixed(2)} cal）`); else if (r.sm < 1) add('warn', `⚠ ${r.label}: 安定余裕が小さい（${r.sm.toFixed(2)} cal）`);
+    for (const e of ev.stages || []) if (e.stage > 1 && e.ign) {
+      if (e.ign.tilt > 30) add('bad', `⛔ ${e.stage}段目の点火時に鉛直から ${e.ign.tilt.toFixed(0)}° 傾いています。上段が横向きに加速します（点火遅れ・射角・風を確認）`);
+      else if (e.ign.tilt > 15) add('warn', `⚠ ${e.stage}段目の点火時に鉛直から ${e.ign.tilt.toFixed(0)}° 傾いています`);
+      if (e.ign.V < 30) add('warn', `⚠ ${e.stage}段目の点火時の速度が低い（${e.ign.V.toFixed(0)} m/s）。フィンが効かず姿勢が乱れやすい`);
+    }
+    if (M.stack.stages.some(b => b.d > M.top.d * 1.5)) add('warn', '⚠ 下段と最上段の径の差が大きく、段間の抗力・安定性の推定誤差が大きくなります');
+    add('warn', '⚠ 多段式は段間の分離衝撃・点火遅れのばらつきを含みません。実機の点火シーケンスの安全確認は別途必要です');
+  }
+  const tw = M.stack ? M.stack.stages[0].Itot / Math.max(M.stack.stages[0].tb, 1e-6) / (m0.m * G0) : M.Itot / Math.max(M.tb, 1e-6) / (m0.m * G0);
   if (tw < 5 && !ev.error) add('warn', `⚠ 平均推力重量比が低い（${tw.toFixed(1)}、目安 5 以上）`);
   if (st.maxMach > 0.85) add('warn', `⚠ 遷音速域に入ります（Mach ${st.maxMach.toFixed(2)}）。抗力・CP の推定誤差が大きくなります`);
   if (st.maxAlpha > 15) add('warn', `⚠ 迎角が大きい（最大 ${st.maxAlpha.toFixed(0)}°）。風・安定性を確認してください`);
@@ -611,7 +673,7 @@ function renderReview() {
   const ta = rv.trueAzim_deg, ref = r => r === 'magnetic' ? '磁北' : '真北';
   const warns = [...(M.warn || [])], dc = usesDecl() ? declCheck(cfg.lat, cfg.lon, declNow()) : null; if (dc) warns.push(dc);
   const nW = warns.length + (cfg.thrustKind === 'assumed' ? 1 : 0);
-  sum.innerHTML = `諸元表チェック <span class="muted">（審査用計算値・後端基準）</span>　<span class="rv-pill">真方位 ${f1(ta)}°</span>`
+  sum.innerHTML = `諸元表チェック <span class="muted">（審査用計算値・後端基準${M.stack ? '・最上段' : ''}）</span>　<span class="rv-pill">真方位 ${f1(ta)}°</span>`
     + (Number.isFinite(rv.fstWet_pct) ? `<span class="rv-pill">Fst ${f1(rv.fstWet_pct)} %</span>` : '')
     + (nW ? `<span class="rv-pill warn">注意 ${nW} 件</span>` : '');
   const windTrue = ((cfg.windFrom + (cfg.windDirRef === 'magnetic' ? cfg.magDecl : 0)) % 360 + 360) % 360;
@@ -625,12 +687,14 @@ function renderReview() {
 }
 
 // ---- 飛行軌跡 ----
+// 回収系の「1段目/2段目」。多段式ではロケットの段と紛らわしいので第1パラ・第2パラと呼ぶ
+const chuteName = n => (model?.stack ? `第${n}パラ` : `${n}段目`);
 const PH_COL = { pow: '#ff9b3d', coast: '#e8eef9', c1: '#4fc3f7', c2: '#7ee787', pay: '#c58bff' };
 // 区間の判定。ph 2 は 2段目の展開時刻以降なら c2（2段目の条件が先に成立したときは 1段目と同時展開なので c1 区間は無い）
 function phKey(r) {
   const d2 = sim?.ev?.deploy2;
   if (r.ph === 2) return d2 && r.t >= d2.t - 1e-9 ? 'c2' : 'c1';
-  return r.t < (model?.tb ?? 0) ? 'pow' : 'coast';
+  return (model?.stack ? r.T > 0 : r.t < (model?.tb ?? 0)) ? 'pow' : 'coast';
 }
 // ---- 再生（時刻ベース）: playT が主で、playIdx は本体の記録 rec の「t ≤ playT の最後の添字」。
 // 再生範囲は flightEnd_t_s まで（本体の着地後は本体を着地点に止め、ペイロードだけ動かす）
@@ -678,6 +742,27 @@ function payTrail(ctx, X, Y, fx, fy, tUpto) {
   const p = payAt(tUpto); if (p) ctx.lineTo(X(fx(p)), Y(fy(p)));
   ctx.stroke(); ctx.setLineDash([]);
 }
+// 切り離した段の軌跡（点線）と現在位置
+const STG_COL = '#7fc4d9';
+function dropAt(d, t) {
+  const pr = d.rec; if (!pr || !pr.length || t < pr[0].t) return null;
+  let i = 0; while (i < pr.length - 1 && pr[i + 1].t <= t) i++;
+  const a = pr[i], b = pr[Math.min(i + 1, pr.length - 1)], w = b.t > a.t ? Math.min(1, (t - a.t) / (b.t - a.t)) : 0;
+  return { x: a.x + (b.x - a.x) * w, y: a.y + (b.y - a.y) * w, z: a.z + (b.z - a.z) * w };
+}
+function dropTrails(ctx, X, Y, fx, fy, tUpto) {
+  for (const d of sim.drops || []) {
+    const pr = d.rec; if (!pr || pr.length < 2 || !(tUpto >= pr[0].t)) continue;
+    ctx.strokeStyle = STG_COL; ctx.lineWidth = 1.6; ctx.setLineDash([2, 4]);
+    ctx.beginPath(); ctx.moveTo(X(fx(pr[0])), Y(fy(pr[0])));
+    for (let i = 1; i < pr.length && pr[i].t <= tUpto; i++) ctx.lineTo(X(fx(pr[i])), Y(fy(pr[i])));
+    ctx.stroke(); ctx.setLineDash([]);
+  }
+}
+function dropNow(ctx, X, Y, fx, fy) {
+  for (const d of sim.drops || []) { const p = dropAt(d, playT); if (p) { ctx.fillStyle = STG_COL; ctx.beginPath(); ctx.arc(X(fx(p)), Y(fy(p)), 3.5, 0, 7); ctx.fill(); } }
+}
+const dropPts = () => (sim.drops || []).flatMap(d => d.rec || []);
 // 着地点の × 印
 function xMark(ctx, px, py, col, label, above) {
   ctx.strokeStyle = col; ctx.lineWidth = 2;
@@ -695,14 +780,15 @@ function drawSide() {
   const dr = r => r.x * sa + r.y * ca;
   const pr = sim.payload?.rec || [], PL = sim.payload?.landing;
   let x0 = 0, x1 = 0, z0 = 0, z1 = 1;
-  for (const r of rec.concat(pr)) { const d = dr(r); x0 = Math.min(x0, d); x1 = Math.max(x1, d); z0 = Math.min(z0, r.z); z1 = Math.max(z1, r.z); }
+  for (const r of rec.concat(pr, dropPts())) { const d = dr(r); x0 = Math.min(x0, d); x1 = Math.max(x1, d); z0 = Math.min(z0, r.z); z1 = Math.max(z1, r.z); }
   const xr = nice(x0, x1, 6), yr = nice(z0, z1 * 1.05, 5);
   const F = frame(ctx, w, h, xr, yr, { xlabel: '打上げ方位方向の距離 [m]', title: '' });
   ctx.fillStyle = CHART_CSS.text; ctx.textAlign = 'left'; ctx.fillText('高度 [m]', 4, 14);
   ctx.save(); ctx.beginPath(); ctx.rect(F.pl, F.pt - 10, w - F.pl - F.pr, h - F.pt - F.pb + 10); ctx.clip();
-  ctx.globalAlpha = 0.25; trail(ctx, rec, F.X, F.Y, dr, r => r.z, rec.length - 1); payTrail(ctx, F.X, F.Y, dr, r => r.z, Infinity); ctx.globalAlpha = 1;
+  ctx.globalAlpha = 0.25; trail(ctx, rec, F.X, F.Y, dr, r => r.z, rec.length - 1); payTrail(ctx, F.X, F.Y, dr, r => r.z, Infinity); dropTrails(ctx, F.X, F.Y, dr, r => r.z, Infinity); ctx.globalAlpha = 1;
   trail(ctx, rec, F.X, F.Y, dr, r => r.z, playIdx);
   payTrail(ctx, F.X, F.Y, dr, r => r.z, playT);
+  dropTrails(ctx, F.X, F.Y, dr, r => r.z, playT); dropNow(ctx, F.X, F.Y, dr, r => r.z);
   const ev = sim.ev;
   const evDot = (t, label, col, below) => {
     if (t == null) return; const r = rec.find(q => q.t >= t) || rec[rec.length - 1];
@@ -710,9 +796,11 @@ function drawSide() {
     ctx.font = '11px system-ui'; ctx.textAlign = 'left'; ctx.fillText(label, F.X(dr(r)) + 6, F.Y(r.z) + (below ? 14 : -4));
   };
   evDot(ev.burnout?.t, '燃焼終了', PH_COL.pow);
+  for (const e of ev.stages || []) { if (e.sep) evDot(e.sep.t, `${e.stage}段目 分離`, STG_COL, true); if (e.stage > 1 && e.ign) evDot(e.ign.t, `${e.stage}段目 点火`, PH_COL.pow); }
+  for (const d of sim.drops || []) if (d.landing) xMark(ctx, F.X(dr(d.landing)), F.Y(0), STG_COL, `${d.stage}段目 落下`, true);
   evDot(ev.apogee?.t, `頂点 ${f0(ev.apogee?.z)} m`, '#fff');
-  if (ev.deploy1 && !ev.deploy2?.beforeDeploy1) evDot(ev.deploy1.t, '1段目開傘', PH_COL.c1, true);
-  if (ev.deploy2) evDot(ev.deploy2.t, ev.deploy2.beforeDeploy1 ? '1・2段目 同時開傘' : '2段目開傘', PH_COL.c2);
+  if (ev.deploy1 && !ev.deploy2?.beforeDeploy1) evDot(ev.deploy1.t, `${chuteName(1)}開傘`, PH_COL.c1, true);
+  if (ev.deploy2) evDot(ev.deploy2.t, ev.deploy2.beforeDeploy1 ? `${chuteName(1)}・${chuteName(2)} 同時開傘` : `${chuteName(2)}開傘`, PH_COL.c2);
   if (ev.payload) evDot(ev.payload.t, 'ペイロード放出', PH_COL.pay, true);
   // 着地点（本体は軌跡の終点、ペイロードは × 印）
   if (PL) xMark(ctx, F.X(dr(PL)), F.Y(pr.length ? pr[pr.length - 1].z : 0), PH_COL.pay, 'ペイロード着地', true);
@@ -738,9 +826,10 @@ function drawSide() {
 }
 function legend(ctx, w) {
   const ev = sim.ev, has2 = !!ev.deploy2, items = [['動力飛行', PH_COL.pow], ['慣性飛行', PH_COL.coast]];
-  if (ev.deploy1 && !(has2 && ev.deploy2.beforeDeploy1)) items.push([has2 ? '1段目パラ' : 'パラ降下', PH_COL.c1]);
-  if (has2) items.push(['2段目パラ', PH_COL.c2]);
+  if (ev.deploy1 && !(has2 && ev.deploy2.beforeDeploy1)) items.push([has2 ? (model?.stack ? '第1パラ' : '1段目パラ') : 'パラ降下', PH_COL.c1]);
+  if (has2) items.push([model?.stack ? '第2パラ' : '2段目パラ', PH_COL.c2]);
   if (sim.payload) items.push(['ペイロード', PH_COL.pay, '┅ ']);
+  if (sim.drops?.length) items.push(['切り離した段', STG_COL, '┈ ']);
   ctx.font = '11px system-ui'; ctx.textAlign = 'right'; let x = w - 16, y = 14;
   for (const [l, c, mk = '━ '] of items.reverse()) {
     const s = mk + l, sw = ctx.measureText(s).width;
@@ -788,21 +877,23 @@ function drawTop() {
   if (!rec.length || !model) return;
   const pr = sim.payload?.rec || [], PL = sim.payload?.landing;
   let x0 = 0, x1 = 0, y0 = 0, y1 = 0;
-  for (const r of rec.concat(pr)) { x0 = Math.min(x0, r.x); x1 = Math.max(x1, r.x); y0 = Math.min(y0, r.y); y1 = Math.max(y1, r.y); }
+  for (const r of rec.concat(pr, dropPts())) { x0 = Math.min(x0, r.x); x1 = Math.max(x1, r.x); y0 = Math.min(y0, r.y); y1 = Math.max(y1, r.y); }
   const m = Math.max(x1 - x0, y1 - y0, 20) * 0.08;
   const pad = { pl: 50, pr: 12, pt: 20, pb: 30 };
   const { xr, yr } = equalRanges(w, h, x0 - m, x1 + m, y0 - m, y1 + m, pad);
   const F = gridFrame(ctx, w, h, xr, yr, pad, '東 [m] →');
   ctx.fillStyle = CHART_CSS.text; ctx.textAlign = 'left'; ctx.fillText('↑ 北 [m]', 4, 14);
   ctx.save(); ctx.beginPath(); ctx.rect(pad.pl, pad.pt, w - pad.pl - pad.pr, h - pad.pt - pad.pb); ctx.clip();
-  ctx.globalAlpha = 0.25; trail(ctx, rec, F.X, F.Y, r => r.x, r => r.y, rec.length - 1); payTrail(ctx, F.X, F.Y, r => r.x, r => r.y, Infinity); ctx.globalAlpha = 1;
+  ctx.globalAlpha = 0.25; trail(ctx, rec, F.X, F.Y, r => r.x, r => r.y, rec.length - 1); payTrail(ctx, F.X, F.Y, r => r.x, r => r.y, Infinity); dropTrails(ctx, F.X, F.Y, r => r.x, r => r.y, Infinity); ctx.globalAlpha = 1;
   trail(ctx, rec, F.X, F.Y, r => r.x, r => r.y, playIdx);
   payTrail(ctx, F.X, F.Y, r => r.x, r => r.y, playT);
+  dropTrails(ctx, F.X, F.Y, r => r.x, r => r.y, playT); dropNow(ctx, F.X, F.Y, r => r.x, r => r.y);
   ctx.fillStyle = '#fff'; ctx.beginPath(); ctx.arc(F.X(0), F.Y(0), 4, 0, 7); ctx.fill();
   ctx.font = '11px system-ui'; ctx.textAlign = 'left'; ctx.fillText('射点', F.X(0) + 6, F.Y(0) - 4);
   const L = sim.ev.landing;
   if (L) xMark(ctx, F.X(L.x), F.Y(L.y), '#ff6b8b', `着地 ${f0(Math.hypot(L.x, L.y))} m`);
   if (PL) xMark(ctx, F.X(PL.x), F.Y(PL.y), PH_COL.pay, `ペイロード ${f0(Math.hypot(PL.x, PL.y))} m`);
+  for (const d of sim.drops || []) if (d.landing) xMark(ctx, F.X(d.landing.x), F.Y(d.landing.y), STG_COL, `${d.stage}段目 ${f0(Math.hypot(d.landing.x, d.landing.y))} m`);
   const pn = payAt(playT);
   if (pn) { ctx.fillStyle = PH_COL.pay; ctx.beginPath(); ctx.arc(F.X(pn.x), F.Y(pn.y), 4, 0, 7); ctx.fill(); }
   const r = rec[Math.max(0, playIdx)];
@@ -1010,7 +1101,7 @@ function init() {
   const mountTab = (mod, fn, sel, name) => {
     const el = $(sel); if (!el) return;
     if (!window[mod]) { el.innerHTML = `<div class="card"><p class="muted">${name}を読み込めませんでした。</p></div>`; return; }
-    try { window[mod][fn](el); } catch (e) { console.error(e); el.innerHTML = `<div class="card"><p class="muted">${name}の初期化に失敗しました: ${escHtml(e.message)}</p></div>`; }
+    try { window[mod][fn](el); } catch (e) { console.error(e); el.innerHTML = `<div class="card"><p class="muted">${name}の初期化に失敗しました: ${e.message}</p></div>`; }
   };
   mountTab('Analysis', 'mountMc', '#tab-mc', 'analysis.js（モンテカルロ・ラプラス近似）');
   mountTab('Analysis', 'mountEkf', '#tab-ekf', 'analysis.js（EKF）');
@@ -1019,7 +1110,7 @@ function init() {
   initTerrain();
   if (window.Dispersion) {
     try { window.Dispersion.mount($('#dispersion')); }
-    catch (e) { console.error(e); $('#dispersion').innerHTML = `<p class="muted">落下分散の初期化に失敗しました: ${escHtml(e.message)}</p>`; }
+    catch (e) { console.error(e); $('#dispersion').innerHTML = `<p class="muted">落下分散の初期化に失敗しました: ${e.message}</p>`; }
   } else $('#dispersion').innerHTML = '<p class="muted">dispersion.js を読み込めませんでした（落下分散は使えません）。</p>';
   initSpecButtons();
   $$('.tabs button').forEach(b => b.addEventListener('click', () => {

@@ -1,5 +1,5 @@
 'use strict';
-/* 学生ロケット シミュレーター — 物理コア（DOM 非依存）
+/* ロケット シミュレーター — 物理コア（DOM 非依存）
  * normalizeCfg(cfg) → 正規化 cfg, buildModel(cfg) → M, simulate(M, opt) → {rec, ev, st, payload}, reviewValues(M)
  * 座標: x=東, y=真北, z=上 [m]。cfg の位置は機体先端基準 [mm]。契約は docs/spec-v2.md
  */

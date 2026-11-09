@@ -1,5 +1,5 @@
 # student-rocket-sim
-学生ロケット飛行シミュレーター（静的 PWA、ビルド不要・依存ライブラリなし）。
+ロケット飛行シミュレーター（静的 PWA、ビルド不要・依存ライブラリなし）。
 - 構成: `physics.js`（物理コア・DOM 非依存）/ `specsheet.js`（諸元表 xlsx, window.SpecSheet）/ `dispersion.js`（落下分散, window.Dispersion）/ `app.js`（UI）/ `view3d.js`（3D, window.V3D）。読込順はこの順（physics → specsheet → dispersion → app → view3d）
 - Magi（C++ のハイブリッドロケット軌道シミュレータ）から移植したモジュール: `geo.js`（WMM2025・Vincenty・正規重力, window.Geo）/ `terrain.js`（国土地理院 標高タイル, window.Terrain）/ `analysis.js` + `analysis-worker.js`（並列 MC・ラプラス近似・EKF・閾値・KML, window.Analysis）/ `verify.js`（検算, window.Verify）/ `design.js`（フィン最適化・パラシュート設計, window.Design）。読込順は geo → terrain → physics → specsheet → dispersion → analysis → verify → design → app → view3d
 - 追加 cfg キー（magMode, launchDate, earthRot, tipOff, lugUpper, windModel, windProfile, windMaxH, ばらつき補正 cnaScale/burnScale/cgShift/cpShift/chuteScale/chuteDelay, 閾値 th*）は既定で従来と同じ挙動

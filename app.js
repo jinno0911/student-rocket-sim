@@ -1,5 +1,5 @@
 'use strict';
-/* 学生ロケット シミュレーター（UI 層）
+/* ロケット シミュレーター（UI 層）
  * 物理コアは physics.js（normalizeCfg / buildModel / simulate …）。契約は docs/spec-v2.md
  * 単位: cfg は mm / g / deg / s（慣性モーメントのみ kg·m²）。位置は常に機体先端からの mm
  * 座標: x=東, y=北, z=上 [m]

@@ -348,17 +348,17 @@ ${tour}<Folder><name>軌道（速度で色分け）</name>${segs}</Folder>${payL
 
   // ================= UI =================
   const CSS = `
-#tab-mc .an-grid,#tab-ekf .an-grid{display:grid;grid-template-columns:1fr;gap:10px}
+#tab-mc .an-grid,#tab-ekf .an-grid{display:grid;grid-template-columns:1fr;gap:8px}
 @media(min-width:900px){#tab-mc .an-grid,#tab-ekf .an-grid{grid-template-columns:1fr 1fr}}
 #tab-mc table.an-t,#tab-ekf table.an-t{border-collapse:collapse;font-size:12px;width:100%}
-#tab-mc .an-t th,#tab-mc .an-t td,#tab-ekf .an-t th,#tab-ekf .an-t td{border-bottom:1px solid var(--line);padding:3px 6px;text-align:right;white-space:nowrap}
+#tab-mc .an-t th,#tab-mc .an-t td,#tab-ekf .an-t th,#tab-ekf .an-t td{border-bottom:1px solid var(--line);padding:4px 8px;text-align:right;white-space:nowrap}
 #tab-mc .an-t th:first-child,#tab-mc .an-t td:first-child,#tab-ekf .an-t td:first-child{text-align:left}
 #tab-mc .an-scroll{overflow-x:auto}
 #tab-mc .an-unc input{width:80px}
 #tab-mc canvas.an-map{height:420px}
 #tab-ekf canvas{height:240px}
-#tab-mc .an-heat td{color:#0b1020}
-#tab-mc .an-bar{display:inline-block;height:9px;background:var(--blue);border-radius:2px;vertical-align:middle;margin-right:4px}`;
+#tab-mc .an-heat td{color:#0f0f10}
+#tab-mc .an-bar{display:inline-block;height:9px;background:var(--fg2);border-radius:2px;vertical-align:middle;margin-right:4px}`;
   let styled = false;
   const style = () => { if (styled) return; styled = true; const s = document.createElement('style'); s.textContent = CSS; document.head.appendChild(s); };
   const loadUnc = () => { try { const v = JSON.parse(localStorage.getItem(UNC_KEY)); if (v) return v; } catch (e) {} return null; };
@@ -412,7 +412,7 @@ ${tour}<Folder><name>軌道（速度で色分け）</name>${segs}</Folder>${payL
   function render(el, base) {
     drawMap(el.querySelector('#anMap'));
     const o = [], M = mcRes, Lp = lapRes;
-    if (base && base.thrustKind === 'assumed') o.push('<div class="w warn">⚠ 推力履歴は仮定（Isp 170 s）。審査提出には地上燃焼試験の推力履歴を使用すること</div>');
+    if (base && base.thrustKind === 'assumed') o.push('<div class="w warn">推力履歴は仮定（Isp 170 s）。審査提出には地上燃焼試験の推力履歴を使用すること</div>');
     if (M) {
       o.push(`<div class="muted small">試行 ${M.done}/${M.n}（着地まで計算できたもの ${M.nOk}、失敗 ${M.failed}）${M.cancelled ? '・途中で中止' : ''}</div>`);
       o.push('<div class="card-h">出力の統計</div><div class="an-scroll"><table class="an-t"><tr><th>項目</th><th>平均</th><th>σ</th><th>最小</th><th>5%</th><th>中央値</th><th>95%</th><th>最大</th></tr>'
@@ -505,7 +505,7 @@ ${tour}<Folder><name>軌道（速度で色分け）</name>${segs}</Folder>${payL
       { name: 'EKF 誤差', color: '#ff9b3d', pts: rows.map(r => [r.t, r.err]) }, { name: '推定 1σ', color: '#7aa2ff', pts: rows.map(r => [r.t, r.sig]) },
       { name: 'GPS 無効', color: '#ff6b8b', pts: rows.map(r => [r.t, r.gps ? NaN : 0]) }] });
     lineChart(el.querySelector('#ekC2'), { title: '高度 [m]（真値と推定）', xlabel: '時間 [s]', yzero: true, series: [
-      { name: '真値', color: '#e6ecf8', pts: rows.map(r => [r.t, r.hTrue]) }, { name: 'EKF 推定', color: '#7ee787', pts: rows.map(r => [r.t, r.hEst]) }] });
+      { name: '真値', color: '#ececec', pts: rows.map(r => [r.t, r.hTrue]) }, { name: 'EKF 推定', color: '#7ee787', pts: rows.map(r => [r.t, r.hEst]) }] });
   }
 
   return {

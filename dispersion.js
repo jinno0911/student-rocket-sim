@@ -41,7 +41,7 @@ window.Dispersion = (() => {
     return '#' + f(0) + f(8) + f(4);
   }
   // 風速のグラデーション（青→赤）。0 m/s は白
-  const spdCol = (si, n) => si === 0 ? '#e6ecf8' : hsl2hex(215 - 215 * (n > 2 ? (si - 1) / (n - 2) : 0), 0.85, 0.58);
+  const spdCol = (si, n) => si === 0 ? '#ececec' : hsl2hex(215 - 215 * (n > 2 ? (si - 1) / (n - 2) : 0), 0.85, 0.58);
 
   // ---------------- 入力（localStorage） ----------------
   function validZone(z) {
@@ -327,45 +327,45 @@ window.Dispersion = (() => {
 #dispersion .disp-wide{grid-column:1/-1}
 #dispersion .row{flex-wrap:wrap}
 #dispersion .disp-h{font-weight:700;font-size:12px;margin:8px 0 4px}
-#dispersion .disp-note{border-radius:8px;padding:6px 10px;margin:0 0 8px;font-size:13px;background:#3a2a10;border:1px solid #7a5a20}
-#dispersion .disp-stale{border-radius:8px;padding:6px 10px;margin:0 0 8px;font-size:13px;background:#3a1424;border:1px solid #7a2a46}
+#dispersion .disp-note{border-left:2px solid var(--yellow);padding:4px 0 4px 16px;margin:0 0 8px;font-size:13px;color:var(--fg2)}
+#dispersion .disp-stale{border-left:2px solid var(--red);padding:4px 0 4px 16px;margin:0 0 8px;font-size:13px;color:var(--fg2)}
 #dispersion .disp-hint{font-size:11px;color:var(--muted)}
-#dispersion .disp-targets{display:flex;flex-wrap:wrap;gap:4px 14px;align-items:center;font-size:12px;color:var(--muted);margin:2px 0 8px}
+#dispersion .disp-targets{display:flex;flex-wrap:wrap;gap:4px 16px;align-items:center;font-size:12px;color:var(--muted);margin:4px 0 8px}
 #dispersion .disp-targets label{display:flex;align-items:center;gap:4px;color:var(--fg)}
 #dispersion .disp-targets label.disp-off{color:var(--muted)}
-#dispersion details.disp-zones{background:#0d1428;margin:0 0 8px}
+#dispersion details.disp-zones{margin:0 0 8px}
 #dispersion details.disp-zones summary{font-size:13px}
-#dispersion .disp-zbody{padding:0 12px 10px}
-#dispersion .disp-z{display:flex;gap:6px;align-items:center;font-size:12px;padding:3px 0;border-bottom:1px solid var(--line)}
+#dispersion .disp-zbody{padding:0 16px 8px}
+#dispersion .disp-z{display:flex;gap:8px;align-items:center;font-size:12px;padding:4px 0;border-bottom:1px solid var(--line)}
 #dispersion .disp-z select{width:auto}
 #dispersion .disp-z span{flex:1;min-width:0;overflow-wrap:anywhere}
-#dispersion .disp-z button{padding:2px 8px}
-#dispersion .disp-sub{display:grid;grid-template-columns:repeat(auto-fit,minmax(120px,1fr));gap:6px 8px;align-items:end;margin:4px 0 6px}
+#dispersion .disp-z button{padding:4px 8px}
+#dispersion .disp-sub{display:grid;grid-template-columns:repeat(auto-fit,minmax(120px,1fr));gap:8px 8px;align-items:end;margin:4px 0 8px}
 #dispersion .disp-run progress{flex:1;min-width:80px;max-width:260px}
 #dispersion .disp-mapbar .field{min-width:160px}
-#dispersion .disp-mapwrap{position:relative;margin:8px 0;border-radius:8px;overflow:hidden;background:#0d1a33;border:1px solid var(--line)}
-#dispersion .disp-map{height:min(60vh,520px);width:100%;background:#0d1a33}
+#dispersion .disp-mapwrap{position:relative;margin:8px 0;border-radius:8px;overflow:hidden;background:#141416;border:1px solid var(--line)}
+#dispersion .disp-map{height:min(60vh,520px);width:100%;background:#141416}
 #dispersion canvas.disp-cv{width:100%;height:min(60vh,520px);display:block}
 #dispersion .leaflet-container{font:12px/1.4 system-ui,sans-serif}
 #dispersion .leaflet-container canvas{width:auto;height:auto}
 #dispersion .leaflet-control input{width:auto}
 #dispersion .leaflet-tooltip{font-size:11px}
-#dispersion .disp-legend{position:absolute;right:8px;bottom:24px;z-index:1000;background:rgba(11,16,32,.88);border:1px solid var(--line);border-radius:6px;padding:5px 8px;font-size:11px;line-height:1.5;color:var(--fg);pointer-events:none;max-width:62%}
-#dispersion .disp-legend i{display:inline-block;width:12px;height:8px;margin:0 3px 0 6px;vertical-align:middle;border-radius:2px}
-#dispersion .disp-legend svg{vertical-align:middle;margin:0 3px 0 6px}
-#dispersion .disp-tip{position:absolute;z-index:1001;pointer-events:none;background:rgba(11,16,32,.94);border:1px solid var(--line);border-radius:6px;padding:3px 6px;font-size:11px;white-space:nowrap;color:var(--fg)}
-#dispersion .disp-mapnote{font-size:11px;color:var(--muted);margin:-4px 0 6px}
+#dispersion .disp-legend{position:absolute;right:8px;bottom:24px;z-index:1000;background:rgba(15,15,16,.88);border:1px solid var(--line);border-radius:6px;padding:4px 8px;font-size:11px;line-height:1.5;color:var(--fg);pointer-events:none;max-width:62%}
+#dispersion .disp-legend i{display:inline-block;width:12px;height:8px;margin:0 4px 0 8px;vertical-align:middle;border-radius:2px}
+#dispersion .disp-legend svg{vertical-align:middle;margin:0 4px 0 8px}
+#dispersion .disp-tip{position:absolute;z-index:1001;pointer-events:none;background:rgba(15,15,16,.94);border:1px solid var(--line);border-radius:6px;padding:4px 8px;font-size:11px;white-space:nowrap;color:var(--fg)}
+#dispersion .disp-mapnote{font-size:11px;color:var(--muted);margin:-4px 0 8px}
 #dispersion .disp-scroll{overflow-x:auto;margin:4px 0 8px;max-width:100%}
 #dispersion table.disp-tbl{border-collapse:collapse;font-size:11px;font-variant-numeric:tabular-nums}
-#dispersion .disp-tbl th,#dispersion .disp-tbl td{border:1px solid var(--line);padding:2px 5px;text-align:center;white-space:nowrap}
-#dispersion .disp-tbl th{color:var(--muted);font-weight:600;background:#0d1428}
+#dispersion .disp-tbl th,#dispersion .disp-tbl td{border:1px solid var(--line);padding:4px 4px;text-align:center;white-space:nowrap}
+#dispersion .disp-tbl th{color:var(--muted);font-weight:600;background:#121213}
 #dispersion .disp-tbl td.disp-ok{color:#7ee787}
-#dispersion .disp-tbl td.disp-ng{color:#ff6b8b;background:#3a1424}
+#dispersion .disp-tbl td.disp-ng{color:#ff6b8b;background:#2a1519}
 #dispersion .disp-tbl td.disp-na{color:var(--muted)}
-#dispersion .disp-all{font-size:14px;margin:2px 0 10px}
+#dispersion .disp-all{font-size:14px;margin:4px 0 8px}
 #dispersion .disp-all b{font-size:17px}
 #dispersion .disp-all b.disp-nogo{color:#ff6b8b}
-#dispersion .disp-exp{margin-top:6px}
+#dispersion .disp-exp{margin-top:8px}
 `;
   const kindSel = cls => `<select class="${cls}" autocomplete="off"><option value="include">許可域（この中に落とす）</option><option value="exclude">禁止域（ここを避ける）</option></select>`;
   function buildDom() {
@@ -404,7 +404,7 @@ window.Dispersion = (() => {
     <div class="disp-h">多角形を追加（1 行に「緯度,経度」を 3 点以上）</div>
     <div class="disp-sub"><label class="field"><span>種別</span>${kindSel('disp-pkind')}</label></div>
     <textarea class="disp-ptext" rows="4" autocomplete="off" placeholder="35.1800,140.3540&#10;35.1800,140.3600&#10;35.1740,140.3600&#10;35.1740,140.3540"></textarea>
-    <div class="row" style="margin-top:6px"><button type="button" class="disp-padd">多角形を追加</button><span class="muted small disp-zmsg"></span></div>
+    <div class="row" style="margin-top:8px"><button type="button" class="disp-padd">多角形を追加</button><span class="muted small disp-zmsg"></span></div>
   </div>
 </details>
 <div class="row disp-run"><button type="button" class="primary disp-go">実行</button><button type="button" class="disp-stop" disabled>中止</button><progress class="disp-prog disp-hide" max="1" value="0"></progress><span class="muted small disp-msg"></span></div>
@@ -581,7 +581,7 @@ window.Dispersion = (() => {
     const lg = q('.disp-legend');
     if (!res) { lg.classList.add('disp-hide'); return; }
     const n = res.speeds.length;
-    const line = d => `<svg width="26" height="8"><line x1="1" y1="4" x2="25" y2="4" stroke="#e6ecf8" stroke-width="2"${d.length ? ` stroke-dasharray="${d.join(',')}"` : ''}/></svg>`;
+    const line = d => `<svg width="26" height="8"><line x1="1" y1="4" x2="25" y2="4" stroke="#ececec" stroke-width="2"${d.length ? ` stroke-dasharray="${d.join(',')}"` : ''}/></svg>`;
     lg.innerHTML = `<div>${MODES.filter(m => res.tg[m]).map(m => line(DASH[m]) + MODE_L[m]).join(' ')}</div>`
       + `<div>風速${res.speeds.map((s, si) => `<i style="background:${spdCol(si, n)}"></i>${s}`).join('')} m/s</div>`
       + `<div><i style="background:#ff9b3d;border-radius:50%"></i>射点${opt.zones.length ? '<i style="background:#7ee787"></i>許可域<i style="background:#ff6b8b"></i>禁止域・NG 点' : ''}</div>`;
@@ -647,9 +647,9 @@ window.Dispersion = (() => {
     // 格子（m）
     const st = nstep(Math.max(W, H) / sc / 8), xa = cx - W / 2 / sc, xb = cx + W / 2 / sc, ya = cy - H / 2 / sc, yb = cy + H / 2 / sc;
     ctx.font = '11px system-ui,sans-serif'; ctx.lineWidth = 1;
-    for (let v = Math.ceil(xa / st) * st; v <= xb; v += st) { ctx.strokeStyle = Math.abs(v) < st / 2 ? '#4a5a80' : '#22304f'; ctx.beginPath(); ctx.moveTo(X(v), 0); ctx.lineTo(X(v), H); ctx.stroke(); if (X(v) < W - 80) { ctx.fillStyle = '#8c9bbd'; ctx.textAlign = 'center'; ctx.fillText(String(Math.round(v)), X(v), H - 4); } }
-    for (let v = Math.ceil(ya / st) * st; v <= yb; v += st) { ctx.strokeStyle = Math.abs(v) < st / 2 ? '#4a5a80' : '#22304f'; ctx.beginPath(); ctx.moveTo(0, Y(v)); ctx.lineTo(W, Y(v)); ctx.stroke(); if (Y(v) > 30) { ctx.fillStyle = '#8c9bbd'; ctx.textAlign = 'left'; ctx.fillText(String(Math.round(v)), 4, Y(v) - 3); } }
-    ctx.fillStyle = '#e6ecf8'; ctx.textAlign = 'left'; ctx.fillText('↑北 [m]', 4, 14); ctx.textAlign = 'right'; ctx.fillText('東 [m] →', W - 6, H - 4);
+    for (let v = Math.ceil(xa / st) * st; v <= xb; v += st) { ctx.strokeStyle = Math.abs(v) < st / 2 ? '#48484d' : '#232326'; ctx.beginPath(); ctx.moveTo(X(v), 0); ctx.lineTo(X(v), H); ctx.stroke(); if (X(v) < W - 80) { ctx.fillStyle = '#8e8e93'; ctx.textAlign = 'center'; ctx.fillText(String(Math.round(v)), X(v), H - 4); } }
+    for (let v = Math.ceil(ya / st) * st; v <= yb; v += st) { ctx.strokeStyle = Math.abs(v) < st / 2 ? '#48484d' : '#232326'; ctx.beginPath(); ctx.moveTo(0, Y(v)); ctx.lineTo(W, Y(v)); ctx.stroke(); if (Y(v) > 30) { ctx.fillStyle = '#8e8e93'; ctx.textAlign = 'left'; ctx.fillText(String(Math.round(v)), 4, Y(v) - 3); } }
+    ctx.fillStyle = '#ececec'; ctx.textAlign = 'left'; ctx.fillText('↑北 [m]', 4, 14); ctx.textAlign = 'right'; ctx.fillText('東 [m] →', W - 6, H - 4);
     // 許可域・禁止域
     for (const z of zs) {
       const col = z.kind === 'include' ? '126,231,135' : '255,107,139';

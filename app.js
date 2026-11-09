@@ -244,7 +244,8 @@ function nice(min, max, n = 5) {
   return { lo: Math.floor(min / st) * st, hi: Math.ceil(max / st) * st, step: st };
 }
 const fmtN = v => { const a = Math.abs(v); return a >= 1e4 ? (v / 1000).toFixed(0) + 'k' : a >= 100 ? v.toFixed(0) : a >= 1 ? +v.toFixed(2) + '' : +v.toPrecision(2) + ''; };
-const CHART_CSS = { grid: '#22304f', axis: '#4a5a80', text: '#8c9bbd', fg: '#e6ecf8' };
+const PLAY_HTML = '<span class="ico ico-play"></span>再生', PAUSE_HTML = '<span class="ico ico-pause"></span>停止';
+const CHART_CSS = { grid: '#232326', axis: '#48484d', text: '#8e8e93', fg: '#ececec' };
 
 // 軸付きフレーム。返り値 X(), Y() でデータ→画面
 function frame(ctx, w, h, xr, yr, o = {}) {
@@ -406,7 +407,7 @@ function runNominal() {
   model = M;
   fsNow = getSummary(M, sim); rvNow = null;
   if (M) try { rvNow = reviewValues(M); } catch (e) { console.error(e); }
-  playing = false; $('#btnPlay').textContent = '▶ 再生';
+  playing = false; $('#btnPlay').innerHTML = PLAY_HTML;
   seekT(playEnd());                                // 計算直後は飛行の終わり（全体の軌跡）を表示する
   renderAll();
   window.V3D?.markDirty();
@@ -433,29 +434,29 @@ function drawRocket() {
   ctx.lineTo(X(M.Ln + M.Lb), Y(M.R)); ctx.lineTo(X(M.L), Y(M.dBase / 2));
   ctx.lineTo(X(M.L), Y(-M.dBase / 2)); ctx.lineTo(X(M.Ln + M.Lb), Y(-M.R));
   for (let i = 40; i >= 0; i--) { const x = M.Ln * i / 40; ctx.lineTo(X(x), Y(-noseR(M, x))); }
-  ctx.closePath(); ctx.fillStyle = '#24345a'; ctx.fill(); ctx.strokeStyle = '#9fb3d9'; ctx.lineWidth = 1.2; ctx.stroke();
-  ctx.strokeStyle = '#9fb3d966'; ctx.beginPath(); ctx.moveTo(X(M.Ln), Y(M.R)); ctx.lineTo(X(M.Ln), Y(-M.R)); ctx.stroke();
+  ctx.closePath(); ctx.fillStyle = '#232326'; ctx.fill(); ctx.strokeStyle = '#b8b8bd'; ctx.lineWidth = 1.2; ctx.stroke();
+  ctx.strokeStyle = '#b8b8bd55'; ctx.beginPath(); ctx.moveTo(X(M.Ln), Y(M.R)); ctx.lineTo(X(M.Ln), Y(-M.R)); ctx.stroke();
   // フィン
   for (const sgn of [1, -1]) {
     ctx.beginPath();
     ctx.moveTo(X(M.Xb), Y(sgn * M.R)); ctx.lineTo(X(M.Xb + M.Xs), Y(sgn * (M.R + M.s)));
     ctx.lineTo(X(M.Xb + M.Xs + M.Ct), Y(sgn * (M.R + M.s))); ctx.lineTo(X(M.Xb + M.Cr), Y(sgn * M.R)); ctx.closePath();
-    ctx.fillStyle = '#3d5a8a'; ctx.fill(); ctx.strokeStyle = '#9fb3d9'; ctx.stroke();
+    ctx.fillStyle = '#38383c'; ctx.fill(); ctx.strokeStyle = '#b8b8bd'; ctx.stroke();
   }
   // モーター
   ctx.setLineDash([4, 3]); ctx.strokeStyle = '#ff9b3d';
   ctx.strokeRect(X(M.motorX - M.mLen / 2), Y(M.mDia / 2), M.mLen * sc, M.mDia * sc); ctx.setLineDash([]);
   // 下段ブースタ
   for (const b of ST) {
-    ctx.fillStyle = '#1c3a4a'; ctx.strokeStyle = '#7fc4d9'; ctx.lineWidth = 1.2;
+    ctx.fillStyle = '#1c1c1e'; ctx.strokeStyle = '#8e8e93'; ctx.lineWidth = 1.2;
     ctx.fillRect(X(b.x0), Y(b.R), b.L * sc, b.d * sc); ctx.strokeRect(X(b.x0), Y(b.R), b.L * sc, b.d * sc);
     const xr = b.x0 + b.L - b.finAft - b.Cr;
     if (b.sp > 0) for (const sgn of [1, -1]) {
       ctx.beginPath(); ctx.moveTo(X(xr), Y(sgn * b.R)); ctx.lineTo(X(xr + b.Xs), Y(sgn * (b.R + b.sp)));
       ctx.lineTo(X(xr + b.Xs + b.Ct), Y(sgn * (b.R + b.sp))); ctx.lineTo(X(xr + b.Cr), Y(sgn * b.R)); ctx.closePath();
-      ctx.fillStyle = '#2d6078'; ctx.fill(); ctx.stroke();
+      ctx.fillStyle = '#2e2e32'; ctx.fill(); ctx.stroke();
     }
-    ctx.fillStyle = '#9fd3e6'; ctx.font = '11px system-ui'; ctx.textAlign = 'center'; ctx.fillText(`${b.no}段目`, X(b.x0 + b.L / 2), Y(0) + 4);
+    ctx.fillStyle = '#c4c4c8'; ctx.font = '11px system-ui'; ctx.textAlign = 'center'; ctx.fillText(`${b.no}段目`, X(b.x0 + b.L / 2), Y(0) + 4);
   }
   // バラスト
   if (cfg.ballast > 0) { ctx.fillStyle = '#c9a227'; ctx.beginPath(); ctx.arc(X(cfg.ballastPos / 1000), Y(0), 4, 0, 7); ctx.fill(); }
@@ -584,82 +585,82 @@ function renderResults() {
     );
   }
   el.innerHTML = cards.join('');
-  const rn = $('#resultNote'); if (rn) rn.innerHTML = cfg.thrustKind === 'assumed' ? `<div class="w warn banner">⚠ ${ASSUMED_MSG}</div>` : '';
+  const rn = $('#resultNote'); if (rn) rn.innerHTML = cfg.thrustKind === 'assumed' ? `<div class="w warn banner">${ASSUMED_MSG}</div>` : '';
 }
 function renderWarnings() {
   const { ev, st } = sim, M = model, S = fsNow || {}, rv = rvNow || {}, out = [];
   const add = (lv, msg) => out.push(`<div class="w ${lv}">${msg}</div>`);
-  if (ev.error) add('bad', '⛔ ' + escHtml(ev.error));
+  if (ev.error) add('bad', '' + escHtml(ev.error));
   if (!M) { $('#warnings').innerHTML = out.join(''); return; }
-  for (const w of M.warn || []) add('warn', '⚠ ' + escHtml(w));
+  for (const w of M.warn || []) add('warn', '' + escHtml(w));
   // 偏角を使う（磁北基準の入力がある）か 0 以外を入れたときだけ警告欄に出す（既定の 0°・真北基準で毎回出るのを避ける）。チェック欄には常に出す
-  const dc = usesDecl() ? declCheck(cfg.lat, cfg.lon, declNow()) : null; if (dc) add('warn', '⚠ ' + escHtml(dc));
+  const dc = usesDecl() ? declCheck(cfg.lat, cfg.lon, declNow()) : null; if (dc) add('warn', '' + escHtml(dc));
   const cp = M.cpAt(0), m0 = M.massAt(0), sm0 = (cp.xcp - m0.cg) / M.d;
-  if (sm0 < 0) add('bad', `⛔ 静的に不安定です（安定余裕 ${sm0.toFixed(2)} cal）。CP が CG より前にあります。`);
-  else if (sm0 < 1) add('warn', `⚠ 安定余裕が小さい（${sm0.toFixed(2)} cal、目安 1.0〜2.0 cal 以上）`);
-  else if (sm0 > 4) add('warn', `⚠ オーバースタブル気味（${sm0.toFixed(2)} cal）。風に向かって大きく傾きやすい`);
+  if (sm0 < 0) add('bad', `静的に不安定です（安定余裕 ${sm0.toFixed(2)} cal）。CP が CG より前にあります。`);
+  else if (sm0 < 1) add('warn', `安定余裕が小さい（${sm0.toFixed(2)} cal、目安 1.0〜2.0 cal 以上）`);
+  else if (sm0 > 4) add('warn', `オーバースタブル気味（${sm0.toFixed(2)} cal）。風に向かって大きく傾きやすい`);
   // Fst（%）= (cg_aft − cp_aft)/L × 100（諸元表の定義）
   const fst = [['充填時', rv.fstWet_pct], ['非充填時', rv.fstDry_pct], ['燃焼終了時', rv.fstBurnout_pct], ['ペイロード放出後', rv.fstAfterPayload_pct]].filter(([, v]) => Number.isFinite(v));
   const fMin = Math.min(...fst.map(a => a[1]));
-  if (fst.length && fMin < 10) add(fMin < 0 ? 'bad' : 'warn', `${fMin < 0 ? '⛔' : '⚠'} Fst が小さい（${fst.map(([l, v]) => `${l} ${v.toFixed(1)} %`).join('、')}。目安 10 % 以上）`);
-  if (ev.railExit && ev.railExit.V < 15) add('warn', `⚠ ランチクリア速度が低い（${ev.railExit.V.toFixed(1)} m/s、目安 15〜20 m/s 以上）`);
-  if (S.railExit_alphaW_deg > 15) add('warn', `⚠ ランチクリア時の横風迎角が大きい（${S.railExit_alphaW_deg.toFixed(1)}°、目安 15° 以下）。風見効果で風上へ大きく向きます`);
+  if (fst.length && fMin < 10) add(fMin < 0 ? 'bad' : 'warn', `Fst が小さい（${fst.map(([l, v]) => `${l} ${v.toFixed(1)} %`).join('、')}。目安 10 % 以上）`);
+  if (ev.railExit && ev.railExit.V < 15) add('warn', `ランチクリア速度が低い（${ev.railExit.V.toFixed(1)} m/s、目安 15〜20 m/s 以上）`);
+  if (S.railExit_alphaW_deg > 15) add('warn', `ランチクリア時の横風迎角が大きい（${S.railExit_alphaW_deg.toFixed(1)}°、目安 15° 以下）。風見効果で風上へ大きく向きます`);
   const stT = stageTable(M);
   if (stT) { // 多段: 全ての段構成の安定性と、上段の点火姿勢・速度
-    for (const r of stT) if (r.sm < 0) add('bad', `⛔ ${r.label}: 静的に不安定です（安定余裕 ${r.sm.toFixed(2)} cal）`); else if (r.sm < 1) add('warn', `⚠ ${r.label}: 安定余裕が小さい（${r.sm.toFixed(2)} cal）`);
+    for (const r of stT) if (r.sm < 0) add('bad', `${r.label}: 静的に不安定です（安定余裕 ${r.sm.toFixed(2)} cal）`); else if (r.sm < 1) add('warn', `${r.label}: 安定余裕が小さい（${r.sm.toFixed(2)} cal）`);
     for (const e of ev.stages || []) if (e.stage > 1 && e.ign) {
-      if (e.ign.tilt > 30) add('bad', `⛔ ${e.stage}段目の点火時に鉛直から ${e.ign.tilt.toFixed(0)}° 傾いています。上段が横向きに加速します（点火遅れ・射角・風を確認）`);
-      else if (e.ign.tilt > 15) add('warn', `⚠ ${e.stage}段目の点火時に鉛直から ${e.ign.tilt.toFixed(0)}° 傾いています`);
-      if (e.ign.V < 30) add('warn', `⚠ ${e.stage}段目の点火時の速度が低い（${e.ign.V.toFixed(0)} m/s）。フィンが効かず姿勢が乱れやすい`);
+      if (e.ign.tilt > 30) add('bad', `${e.stage}段目の点火時に鉛直から ${e.ign.tilt.toFixed(0)}° 傾いています。上段が横向きに加速します（点火遅れ・射角・風を確認）`);
+      else if (e.ign.tilt > 15) add('warn', `${e.stage}段目の点火時に鉛直から ${e.ign.tilt.toFixed(0)}° 傾いています`);
+      if (e.ign.V < 30) add('warn', `${e.stage}段目の点火時の速度が低い（${e.ign.V.toFixed(0)} m/s）。フィンが効かず姿勢が乱れやすい`);
     }
-    if (M.stack.stages.some(b => b.d > M.top.d * 1.5)) add('warn', '⚠ 下段と最上段の径の差が大きく、段間の抗力・安定性の推定誤差が大きくなります');
-    add('warn', '⚠ 多段式は段間の分離衝撃・点火遅れのばらつきを含みません。実機の点火シーケンスの安全確認は別途必要です');
+    if (M.stack.stages.some(b => b.d > M.top.d * 1.5)) add('warn', '下段と最上段の径の差が大きく、段間の抗力・安定性の推定誤差が大きくなります');
+    add('warn', '多段式は段間の分離衝撃・点火遅れのばらつきを含みません。実機の点火シーケンスの安全確認は別途必要です');
   }
   const tw = M.stack ? M.stack.stages[0].Itot / Math.max(M.stack.stages[0].tb, 1e-6) / (m0.m * G0) : M.Itot / Math.max(M.tb, 1e-6) / (m0.m * G0);
-  if (tw < 5 && !ev.error) add('warn', `⚠ 平均推力重量比が低い（${tw.toFixed(1)}、目安 5 以上）`);
-  if (st.maxMach > 0.85) add('warn', `⚠ 遷音速域に入ります（Mach ${st.maxMach.toFixed(2)}）。抗力・CP の推定誤差が大きくなります`);
-  if (st.maxAlpha > 15) add('warn', `⚠ 迎角が大きい（最大 ${st.maxAlpha.toFixed(0)}°）。風・安定性を確認してください`);
-  if (ev.deploy1 && ev.deploy1.V > 30) add('warn', `⚠ 開傘時の対気速度が大きい（${ev.deploy1.V.toFixed(0)} m/s）。開傘衝撃に注意`);
-  if (ev.deploy2 && ev.deploy2.V > 40) add('warn', `⚠ 2段目開傘時の対気速度が大きい（${ev.deploy2.V.toFixed(0)} m/s）。1段目の大きさを確認してください`);
+  if (tw < 5 && !ev.error) add('warn', `平均推力重量比が低い（${tw.toFixed(1)}、目安 5 以上）`);
+  if (st.maxMach > 0.85) add('warn', `遷音速域に入ります（Mach ${st.maxMach.toFixed(2)}）。抗力・CP の推定誤差が大きくなります`);
+  if (st.maxAlpha > 15) add('warn', `迎角が大きい（最大 ${st.maxAlpha.toFixed(0)}°）。風・安定性を確認してください`);
+  if (ev.deploy1 && ev.deploy1.V > 30) add('warn', `開傘時の対気速度が大きい（${ev.deploy1.V.toFixed(0)} m/s）。開傘衝撃に注意`);
+  if (ev.deploy2 && ev.deploy2.V > 40) add('warn', `2段目開傘時の対気速度が大きい（${ev.deploy2.V.toFixed(0)} m/s）。1段目の大きさを確認してください`);
   // 頂点からのずれ（dtApo < 0 は上昇中、> dtApoWarn は遅すぎ）
   const tw1 = cfg.rec1 === 'burnout' || cfg.rec1 === 'ignition', lim = cfg.dtApoWarn;
   const d1 = S.deploy1_dtApo_s;
   if (Number.isFinite(d1) && (d1 < 0 || d1 > lim)) {
     const hint = tw1 && ev.apogee ? `（最適な${cfg.rec1 === 'burnout' ? '作動終了からの' : '点火からの'}時間 ≈ ${(ev.apogee.t - (cfg.rec1 === 'burnout' ? M.tb : 0)).toFixed(1)} s）` : '';
-    add('warn', d1 < 0 ? `⚠ 1段目が頂点の ${(-d1).toFixed(1)} s 前（上昇中）に開傘します。対気速度 ${f1(S.deploy1_Va_mps)} m/s${hint}`
-      : `⚠ 1段目の開傘が頂点から +${d1.toFixed(1)} s 遅れています（しきい値 ${lim} s）${hint}`);
+    add('warn', d1 < 0 ? `1段目が頂点の ${(-d1).toFixed(1)} s 前（上昇中）に開傘します。対気速度 ${f1(S.deploy1_Va_mps)} m/s${hint}`
+      : `1段目の開傘が頂点から +${d1.toFixed(1)} s 遅れています（しきい値 ${lim} s）${hint}`);
   }
-  if (ev.deploy1 && !ev.apogee) add('warn', '⚠ 頂点到達前に開傘しています');
-  if (ev.deploy1?.by === 'timer' && cfg.rec1 === 'apogee') add('warn', `⚠ 頂点検知より先に冗長タイマー（${cfg.rec1Backup} s）で開傘しています`);
+  if (ev.deploy1 && !ev.apogee) add('warn', '頂点到達前に開傘しています');
+  if (ev.deploy1?.by === 'timer' && cfg.rec1 === 'apogee') add('warn', `頂点検知より先に冗長タイマー（${cfg.rec1Backup} s）で開傘しています`);
   // 2段目は「1段目の後に開く」設計なので、頂点より前（上昇中）と 1段目より先のときだけ警告する
-  if (S.deploy2_dtApo_s < 0) add('warn', `⚠ 2段目が頂点の ${(-S.deploy2_dtApo_s).toFixed(1)} s 前（上昇中）に開傘します。対気速度 ${f1(S.deploy2_Va_mps)} m/s`);
-  if (ev.deploy2?.beforeDeploy1) add('warn', '⚠ 2段目の条件が 1段目より先に成立したため、1段目と同時に展開しました');
+  if (S.deploy2_dtApo_s < 0) add('warn', `2段目が頂点の ${(-S.deploy2_dtApo_s).toFixed(1)} s 前（上昇中）に開傘します。対気速度 ${f1(S.deploy2_Va_mps)} m/s`);
+  if (ev.deploy2?.beforeDeploy1) add('warn', '2段目の条件が 1段目より先に成立したため、1段目と同時に展開しました');
   if (cfg.rec1 !== 'none' && cfg.chuteSpec === 'velocity' && cfg.rec2 !== 'none' && cfg.c2Vt >= cfg.c1Vt)
-    add('warn', `⚠ 2段目の降下終端速度 ${cfg.c2Vt} m/s が 1段目 ${cfg.c1Vt} m/s 以上です（2段目で減速しません）`);
-  if (ev.landing && Math.abs(ev.landing.vz) > 7 && cfg.rec1 !== 'none') add('warn', `⚠ 降下速度が大きい（${Math.abs(ev.landing.vz).toFixed(1)} m/s、目安 4〜7 m/s）`);
-  if (cfg.rec1 !== 'none' && cfg.rec2 === 'altitude' && ev.apogee && ev.apogee.z < cfg.mainAlt) add('warn', '⚠ 頂点高度が 2段目の開傘高度より低いため、1段目の直後に 2段目が開きます');
+    add('warn', `2段目の降下終端速度 ${cfg.c2Vt} m/s が 1段目 ${cfg.c1Vt} m/s 以上です（2段目で減速しません）`);
+  if (ev.landing && Math.abs(ev.landing.vz) > 7 && cfg.rec1 !== 'none') add('warn', `降下速度が大きい（${Math.abs(ev.landing.vz).toFixed(1)} m/s、目安 4〜7 m/s）`);
+  if (cfg.rec1 !== 'none' && cfg.rec2 === 'altitude' && ev.apogee && ev.apogee.z < cfg.mainAlt) add('warn', '頂点高度が 2段目の開傘高度より低いため、1段目の直後に 2段目が開きます');
   // ペイロード
   if (cfg.payloadOn && !ev.error) {
     const dp = S.payload_dtApo_s, P = sim.payload;
-    if (!P && !ev.payload) add('warn', `⚠ ペイロードが放出されませんでした（放出時刻 ${cfg.payloadTime} s が着地より後など）`);
-    if (dp < 0) add('warn', `⚠ ペイロードが上昇中（頂点の ${(-dp).toFixed(1)} s 前）に放出されます。対気速度 ${f1(S.payload_Va_mps)} m/s、開傘荷重 ${f0(S.payloadOpenLoad_N)} N（${f1(S.payloadOpenLoad_G)} G）、放出後の Fst ${f1(rv.fstAfterPayload_pct)} %`);
-    else if (dp > lim) add('warn', `⚠ ペイロードの放出が頂点から +${dp.toFixed(1)} s 遅れています（しきい値 ${lim} s）`);
-    if (P?.error) add('warn', '⚠ ペイロード: ' + escHtml(P.error));
-    else if (P && !P.landing) add('warn', '⚠ ペイロードが着地しませんでした');
+    if (!P && !ev.payload) add('warn', `ペイロードが放出されませんでした（放出時刻 ${cfg.payloadTime} s が着地より後など）`);
+    if (dp < 0) add('warn', `ペイロードが上昇中（頂点の ${(-dp).toFixed(1)} s 前）に放出されます。対気速度 ${f1(S.payload_Va_mps)} m/s、開傘荷重 ${f0(S.payloadOpenLoad_N)} N（${f1(S.payloadOpenLoad_G)} G）、放出後の Fst ${f1(rv.fstAfterPayload_pct)} %`);
+    else if (dp > lim) add('warn', `ペイロードの放出が頂点から +${dp.toFixed(1)} s 遅れています（しきい値 ${lim} s）`);
+    if (P?.error) add('warn', 'ペイロード: ' + escHtml(P.error));
+    else if (P && !P.landing) add('warn', 'ペイロードが着地しませんでした');
   }
   // 推進系（諸元表との整合）
   const hyb = cfg.massMode === 'hybrid';
   if (cfg.thrustKind !== 'assumed' && cfg.hOpTime > 0 && Number.isFinite(rv.opTimeCurve_s) && Math.abs(rv.opTimeCurve_s - cfg.hOpTime) > 0.1)
-    add('warn', `⚠ 推力履歴から求めた作動時間 ${rv.opTimeCurve_s.toFixed(2)} s が諸元表の作動時間 ${cfg.hOpTime} s と 0.1 s 以上違います`);
+    add('warn', `推力履歴から求めた作動時間 ${rv.opTimeCurve_s.toFixed(2)} s が諸元表の作動時間 ${cfg.hOpTime} s と 0.1 s 以上違います`);
   const opT = Number.isFinite(rv.opTime_s) ? rv.opTime_s : M.tb;
   if (hyb && cfg.hBurnTime > opT + 1e-9 && !(M.warn || []).some(w => /燃焼時間.*作動時間/.test(w)))
-    add('warn', `⚠ 燃焼時間 ${cfg.hBurnTime} s が作動時間 ${+opT.toFixed(3)} s を超えています`);
+    add('warn', `燃焼時間 ${cfg.hBurnTime} s が作動時間 ${+opT.toFixed(3)} s を超えています`);
   if (hyb && Number.isFinite(rv.ispEff_s) && (rv.ispEff_s < 100 || rv.ispEff_s > 250))
-    add('warn', `⚠ 有効比推力 ${rv.ispEff_s.toFixed(0)} s が範囲外です（ハイブリッドの目安 100〜250 s）。推力履歴・推進剤質量を確認してください`);
-  if (M.c.mDia > M.c.d) add('bad', '⛔ モーター径が胴体外径より大きくなっています');
-  for (const th of window.Analysis ? window.Analysis.thresholds(cfg, S) : []) if (!th.ok) add('bad', `⛔ 性能閾値: ${th.l} ${th.limit} ${th.u} を満たしていません（${Number.isFinite(th.value) ? +th.value.toFixed(1) : '—'} ${th.u}）`);
+    add('warn', `有効比推力 ${rv.ispEff_s.toFixed(0)} s が範囲外です（ハイブリッドの目安 100〜250 s）。推力履歴・推進剤質量を確認してください`);
+  if (M.c.mDia > M.c.d) add('bad', 'モーター径が胴体外径より大きくなっています');
+  for (const th of window.Analysis ? window.Analysis.thresholds(cfg, S) : []) if (!th.ok) add('bad', `性能閾値: ${th.l} ${th.limit} ${th.u} を満たしていません（${Number.isFinite(th.value) ? +th.value.toFixed(1) : '—'} ${th.u}）`);
   if (ev.railExit && Number.isFinite(ev.railExit.tipRate)) add('ok', `ℹ ティップオフ: 下側ラグ離脱時のピッチレート ${ev.railExit.tipRate.toFixed(2)}°/s、頭下げ ${ev.railExit.tipAngle.toFixed(3)}°`);
-  if (!out.length) add('ok', '✓ 主要な警告はありません');
+  if (!out.length) add('ok', '主要な警告はありません');
   $('#warnings').innerHTML = out.join('');
 }
 const declNow = () => (model && Number.isFinite(model.magDecl) ? model.magDecl : cfg.magDecl); // 自動（WMM）なら計算値
@@ -678,8 +679,8 @@ function renderReview() {
     + (nW ? `<span class="rv-pill warn">注意 ${nW} 件</span>` : '');
   const windTrue = ((cfg.windFrom + (cfg.windDirRef === 'magnetic' ? cfg.magDecl : 0)) % 360 + 360) % 360;
   const rows = REVIEW_LABELS.map(([k, l, u]) => `<div class="rv-row${/_nose_/.test(k) ? ' sub' : ''}${k === 'trueAzim_deg' ? ' key' : ''}"><span class="rv-l">${escHtml(l)}</span><span class="rv-v">${fv(rv[k])}</span><span class="rv-u">${u === '-' ? '' : escHtml(u)}</span></div>`).join('');
-  box.innerHTML = (cfg.thrustKind === 'assumed' ? `<div class="w warn">⚠ ${ASSUMED_MSG}</div>` : '')
-    + warns.map(w => `<div class="w warn">⚠ ${escHtml(w)}</div>`).join('')
+  box.innerHTML = (cfg.thrustKind === 'assumed' ? `<div class="w warn">${ASSUMED_MSG}</div>` : '')
+    + warns.map(w => `<div class="w warn">${escHtml(w)}</div>`).join('')
     + `<div class="kv rv-az"><span>打上げ方位（入力） <b>${cfg.azim}°（${ref(cfg.azimRef)}基準）</b></span><span>磁気偏角 <b>${cfg.magDecl}°</b></span>`
     + `<span>真方位 <b>${f1(ta)}°</b></span><span>風向（真北基準） <b>${f1(windTrue)}°</b></span></div>`
     + `<div class="rv-grid">${rows}</div>`
@@ -925,7 +926,7 @@ function playLoop(ts) {
   const end = playEnd();
   seekT(playT + dt * +$('#selSpeed').value);
   drawPlay(ts);
-  if (playT >= end - 1e-9) { playing = false; $('#btnPlay').textContent = '▶ 再生'; drawPlay(); return; }
+  if (playT >= end - 1e-9) { playing = false; $('#btnPlay').innerHTML = PLAY_HTML; drawPlay(); return; }
   requestAnimationFrame(playLoop);
 }
 
@@ -1027,17 +1028,17 @@ function showImportPanel(title, r = {}) {
     : '<p class="muted small">なし</p>';
   const imp = r.imported || [], sup = r.supplemented || [], warns = (r.warnings || []).filter(Boolean);
   let body;
-  if (r.error) body = `<div class="w bad">⛔ ${esc(r.error)}</div>`;
-  else body = (cfg.thrustKind === 'assumed' ? `<div class="w warn banner">⚠ ${ASSUMED_MSG}</div>` : '') + `
+  if (r.error) body = `<div class="w bad">${esc(r.error)}</div>`;
+  else body = (cfg.thrustKind === 'assumed' ? `<div class="w warn banner">${ASSUMED_MSG}</div>` : '') + `
     <details class="imp-sec" ${warns.length ? 'open' : ''}><summary>警告（${warns.length}）</summary>${
-      warns.length ? warns.map(w => `<div class="w warn">⚠ ${esc(w)}</div>`).join('') : '<p class="muted small">なし</p>'}</details>
+      warns.length ? warns.map(w => `<div class="w warn">${esc(w)}</div>`).join('') : '<p class="muted small">なし</p>'}</details>
     <details class="imp-sec" open><summary>諸元表に無いため補った項目（${sup.length}）</summary>${
       tbl(['項目', '値', '単位', '理由'], sup.map(s => [s.label ?? s.key, val(s.value), s.unit ?? '', s.reason ?? '']))}</details>
     <details class="imp-sec"><summary>読み込んだ項目（${imp.length}）</summary>${
       tbl(['諸元表の項目', '諸元表の値', 'シミュレータの項目', '値'], imp.map(s => [
         s.sheetLabel ?? '—', s.sheetValue == null ? '—' : `${val(s.sheetValue)} ${s.sheetUnit ?? ''}`,
         s.label ?? s.key, `${val(s.value)} ${s.unit ?? ''}`]))}</details>`;
-  el.innerHTML = `<div class="imp-h"><b>${esc(title)}</b><button type="button" class="imp-close" title="閉じる">✕</button></div>${body}`;
+  el.innerHTML = `<div class="imp-h"><b>${esc(title)}</b><button type="button" class="imp-close" title="閉じる" aria-label="閉じる"><span class="ico ico-x"></span></button></div>${body}`;
   el.classList.remove('hide');
   el.querySelector('.imp-close').addEventListener('click', () => el.classList.add('hide'));
   el.scrollIntoView?.({ block: 'nearest' });
@@ -1122,10 +1123,10 @@ function init() {
     redrawVisible();
   }));
   $('#btnPlay').addEventListener('click', () => {
-    if (playing) { playing = false; $('#btnPlay').textContent = '▶ 再生'; return; }
+    if (playing) { playing = false; $('#btnPlay').innerHTML = PLAY_HTML; return; }
     if (!sim.rec.length) return;
     if (playT >= playEnd() - 1e-6) seekT(0);
-    lastFrame = 0; playing = true; $('#btnPlay').textContent = '⏸ 停止';
+    lastFrame = 0; playing = true; $('#btnPlay').innerHTML = PAUSE_HTML;
     requestAnimationFrame(playLoop);
   });
   $('#scrub').addEventListener('input', e => { seekT(+e.target.value); drawPlay(); });

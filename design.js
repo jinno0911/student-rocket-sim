@@ -227,7 +227,7 @@ window.Design = (() => {
       ['質量・安定性・空力', [['フィン 1 枚の面積', e.Af * 1e4, 'cm²'], ['フィン 1 枚の質量', e.m1 * 1000, 'g'], ['全フィンの質量', e.mf * 1000, 'g'], ['合計質量', e.mtot, 'kg'], ['重心（後端から）', L - e.xcg * 1000, 'mm'], ['圧力中心（後端から）', L - e.xcp * 1000, 'mm'], ['Fst', e.fst, '%'], ['静安定余裕', (e.xcp - e.xcg) / (cfg.d / 1000), 'cal'], ['CNα', e.cna, '1/rad'], ['Cmq（全長基準）', e.cmq, '-'], ['Clp（全長基準）', e.clp, '-'], ['フラッター速度', e.flutter, 'm/s'], ['評価対気速度', R.V, 'm/s']]],
       ['フィン抗力（概算）', [['平均フィン抗力係数（±10°）', e.cdMean, '-'], ['摩擦抗力係数', e.cdf, '-'], ['最大フィン抗力係数（±10°）', e.cdMax, '-'], ['平均フィン抗力', e.Fmean, 'N'], ['最大フィン抗力', e.Fmax, 'N'], ['評価マッハ数', e.mach, '-']]],
     ];
-    o.innerHTML = (w.length ? w.map(s => `<div class="w warn">⚠ ${esc(s)}</div>`).join('') : '') + `<div class="kv" style="display:block">` + rows.map(([sec, rs]) => `<div style="margin-top:6px"><b style="color:var(--fg)">${sec}</b><div class="kv">${rs.map(([l, v, u]) => `<span>${l} <b>${fin(v) ? +v.toPrecision(5) : '—'} ${u}</b></span>`).join('')}</div></div>`).join('') + '</div>';
+    o.innerHTML = (w.length ? w.map(s => `<div class="w warn">${esc(s)}</div>`).join('') : '') + `<div class="kv" style="display:block">` + rows.map(([sec, rs]) => `<div style="margin-top:8px"><b style="color:var(--fg)">${sec}</b><div class="kv">${rs.map(([l, v, u]) => `<span>${l} <b>${fin(v) ? +v.toPrecision(5) : '—'} ${u}</b></span>`).join('')}</div></div>`).join('') + '</div>';
   }
   return { evaluate, context, optimize, chute, mount };
 })();

@@ -24,7 +24,7 @@ window.V3D = (() => {
     renderer.setPixelRatio(Math.min(window.devicePixelRatio || 1, 2));
     box.appendChild(renderer.domElement);
     scene = new THREE.Scene();
-    scene.background = new THREE.Color(0x0e1c38);
+    scene.background = new THREE.Color(0x141416);
     camera = new THREE.PerspectiveCamera(50, 1, 0.05, 500000);
     controls = new THREE.OrbitControls(camera, renderer.domElement);
     controls.enableDamping = true; controls.dampingFactor = 0.08;
@@ -45,13 +45,13 @@ window.V3D = (() => {
   }
 
   // ---------- ラベル ----------
-  function label(text, color = '#e6ecf8', size = 1) {
+  function label(text, color = '#ececec', size = 1) {
     const cv = document.createElement('canvas'), ctx = cv.getContext('2d');
     ctx.font = 'bold 40px system-ui, sans-serif';
     const w = Math.ceil(ctx.measureText(text).width) + 24;
     cv.width = w; cv.height = 60;
     ctx.font = 'bold 40px system-ui, sans-serif';
-    ctx.fillStyle = 'rgba(8,14,30,.65)'; ctx.fillRect(0, 0, w, 60);
+    ctx.fillStyle = 'rgba(15,15,16,.7)'; ctx.fillRect(0, 0, w, 60);
     ctx.fillStyle = color; ctx.textBaseline = 'middle'; ctx.fillText(text, 12, 31);
     const tex = new THREE.CanvasTexture(cv);
     const sp = new THREE.Sprite(new THREE.SpriteMaterial({ map: tex, sizeAttenuation: false, depthTest: false, transparent: true }));
@@ -149,7 +149,7 @@ window.V3D = (() => {
       ? `機体とパラシュートは見やすさのため ×${visScale.toFixed(0)} で表示しています（軌跡・地形は実寸）。グリッド 1 マス = ${fmtN(gridStep())} m`
       : `すべて実寸表示。グリッド 1 マス = ${fmtN(gridStep())} m`;
 
-    scene.fog = new THREE.Fog(0x0e1c38, ext * 4, ext * 14);
+    scene.fog = new THREE.Fog(0x141416, ext * 4, ext * 14);
     // 地面
     const ground = new THREE.Mesh(new THREE.CircleGeometry(ext * 14, 64), new THREE.MeshStandardMaterial({ color: 0x1b2a1e, roughness: 1 }));
     ground.rotation.x = -Math.PI / 2; root.add(ground);

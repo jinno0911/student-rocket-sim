@@ -4,7 +4,7 @@
  * 判定: 合格 / 注意 / 不合格 / 参考。※「設定どおりに計算できているか」の確認で、実機との一致を保証するものではない
  */
 window.Verify = (() => {
-  const ST = { pass: ['合格', '#7ee787'], warn: ['注意', '#ffd36b'], fail: ['不合格', '#ff6b8b'], info: ['参考', '#8c9bbd'] };
+  const ST = { pass: ['合格', '#7ee787'], warn: ['注意', '#ffd36b'], fail: ['不合格', '#ff6b8b'], info: ['参考', '#8e8e93'] };
   const fin = v => typeof v === 'number' && Number.isFinite(v);
   const f = (v, d = 3) => (fin(v) ? (+v.toPrecision(d + 3)).toString() : '—');
   const esc = s => String(s).replace(/[&<>"]/g, c => ({ '&': '&amp;', '<': '&lt;', '>': '&gt;', '"': '&quot;' }[c]));
@@ -205,8 +205,8 @@ window.Verify = (() => {
     el.querySelector('#vfSum').innerHTML = `合格 <b style="color:${ST.pass[1]}">${R.n.pass}</b> / 注意 <b style="color:${ST.warn[1]}">${R.n.warn}</b> / 不合格 <b style="color:${ST.fail[1]}">${R.n.fail}</b> / 参考 ${R.n.info}（${(R.ms / 1000).toFixed(1)} s）`;
     let g = '', h = '<div style="overflow-x:auto"><table class="vf-t" style="border-collapse:collapse;font-size:12px;width:100%">';
     for (const it of R.items) {
-      if (it.g !== g) { g = it.g; h += `<tr><th colspan="5" style="text-align:left;padding:8px 4px 2px">${esc(g)}</th></tr><tr class="muted"><td>判定</td><td>項目</td><td>検算（独立）</td><td>本体</td><td>差</td></tr>`; }
-      h += `<tr style="border-top:1px solid var(--line)"><td style="color:${ST[it.st][1]};font-weight:700;padding:3px 6px">${ST[it.st][0]}</td><td style="padding:3px 6px">${esc(it.title)}<div class="muted small">${esc(it.note)}</div></td><td style="padding:3px 6px">${esc(it.exp)}</td><td style="padding:3px 6px">${esc(it.act)}</td><td style="padding:3px 6px">${esc(it.diff)}</td></tr>`;
+      if (it.g !== g) { g = it.g; h += `<tr><th colspan="5" style="text-align:left;padding:8px 4px 4px">${esc(g)}</th></tr><tr class="muted"><td>判定</td><td>項目</td><td>検算（独立）</td><td>本体</td><td>差</td></tr>`; }
+      h += `<tr style="border-top:1px solid var(--line)"><td style="color:${ST[it.st][1]};font-weight:700;padding:4px 8px">${ST[it.st][0]}</td><td style="padding:4px 8px">${esc(it.title)}<div class="muted small">${esc(it.note)}</div></td><td style="padding:4px 8px">${esc(it.exp)}</td><td style="padding:4px 8px">${esc(it.act)}</td><td style="padding:4px 8px">${esc(it.diff)}</td></tr>`;
     }
     el.querySelector('#vfOut').innerHTML = h + '</table></div>';
   }

@@ -3,7 +3,7 @@
   "short_name": "ロケットSim",
   "start_url": "./",
   "display": "standalone",
-  "background_color": "#0b1020",
-  "theme_color": "#0b1020",
+  "background_color": "#0f0f10",
+  "theme_color": "#0f0f10",
   "icons": [{ "src": "icons/icon.svg", "sizes": "any", "type": "image/svg+xml" }]
 }

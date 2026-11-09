@@ -45,9 +45,11 @@
   app.js の `const CSS` は `CHART_CSS` に改名する（`window.CSS` を隠してしまうため）。ui が新しく足すトップレベル名は physics の名前と重複させない。
 - specsheet.js / dispersion.js / view3d.js は、トップレベルに `window.X = …` 以外の名前を作らない。
 
-### 0.4 外部ライブラリ（使う時点で動的に読み込む。URL は固定）
-- SheetJS: `https://cdnjs.cloudflare.com/ajax/libs/xlsx/0.18.5/xlsx.full.min.js`
-- Leaflet: `https://cdnjs.cloudflare.com/ajax/libs/leaflet/1.9.4/leaflet.min.js` と `…/leaflet/1.9.4/leaflet.min.css`
+### 0.4 外部ライブラリ（使う時点で動的に読み込む。URL は固定、SRI（integrity + crossorigin="anonymous"）を付ける）
+- SheetJS: `https://cdn.jsdelivr.net/npm/xlsx@0.18.5/dist/xlsx.full.min.js`
+- Leaflet: `https://cdn.jsdelivr.net/npm/leaflet@1.9.4/dist/leaflet.js` と `…/leaflet@1.9.4/dist/leaflet.css`
+- Three.js（index.html で読込）: `https://cdn.jsdelivr.net/npm/three@0.128.0/build/three.min.js` と `…/three@0.128.0/examples/js/controls/OrbitControls.js`
+- ハッシュは npm パッケージ（npm の integrity と照合した tarball）の同じファイルの sha384。バージョンを変えるときはハッシュも作り直す
 
 ---
 

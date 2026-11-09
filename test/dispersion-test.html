@@ -171,7 +171,9 @@ function download(name, text, type) { __dl.push({ name, text, type }); }
     const lfTags = () => [document.querySelectorAll('script[src*="leaflet"]').length, document.querySelectorAll('link[href*="leaflet"]').length];
     ok('mount だけでは Leaflet を読まない', lfTags().join() === '0,0' && !T.leafletState().loading, lfTags().join());
     D.setVisible(true);
-    if (useLeaflet) ok('最初の setVisible(true) で Leaflet の JS と CSS を 1 回だけ読む（1.9.4・cdnjs）', lfTags().join() === '1,1' && document.querySelector('script[src*="leaflet"]').src === 'https://cdnjs.cloudflare.com/ajax/libs/leaflet/1.9.4/leaflet.min.js' && document.querySelector('link[href*="leaflet"]').href === 'https://cdnjs.cloudflare.com/ajax/libs/leaflet/1.9.4/leaflet.min.css', lfTags().join());
+    if (useLeaflet) { const ls = document.querySelector('script[src*="leaflet"]'), ll = document.querySelector('link[href*="leaflet"]');
+      ok('最初の setVisible(true) で Leaflet の JS と CSS を 1 回だけ読む（1.9.4・jsDelivr）', lfTags().join() === '1,1' && ls.src === 'https://cdn.jsdelivr.net/npm/leaflet@1.9.4/dist/leaflet.js' && ll.href === 'https://cdn.jsdelivr.net/npm/leaflet@1.9.4/dist/leaflet.css', lfTags().join());
+      ok('Leaflet の JS と CSS は SRI（integrity + crossorigin）付き', /^sha384-/.test(ls.integrity) && /^sha384-/.test(ll.integrity) && ls.crossOrigin === 'anonymous' && ll.crossOrigin === 'anonymous', ls.integrity + ' ' + ll.integrity); }
     D.setVisible(false); D.setVisible(true);
     if (useLeaflet) ok('2 回目の setVisible(true) では読み直さない', lfTags().join() === '1,1', lfTags().join());
     ok('風速の色はグラデーション（0 m/s は白、風速ごとに違う色）', T.spdCol(0, 4) === '#e6ecf8' && new Set([1, 2, 3].map(i => T.spdCol(i, 4))).size === 3 && /^#[0-9a-f]{6}$/.test(T.spdCol(3, 4)), [0, 1, 2, 3].map(i => T.spdCol(i, 4)).join(','));

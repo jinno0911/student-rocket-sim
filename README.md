@@ -38,3 +38,14 @@ python -m http.server 8775
 ## テスト
 ヘッドレス Chrome で実行（`bash test/headless.sh <URL|ファイル>`）:
 - `test/physics-test.html`（物理・審査値の検算）, `test/specsheet-test.html`, `test/dispersion-test.html`, `test/app-smoke.html`（結合）, `test/magi-test.html?noworker`（Magi から移植した機能。ワーカー込みはブラウザで開く）, `test/stage-test.html`（多段式）
+
+## PowerShell から実行
+
+```powershell
+.\sim.ps1                       # 既定の機体で飛行シミュレーションを実行し結果を表示
+.\sim.ps1 -Debug                # Debug 諸元（団体入力シートのサンプル）
+.\sim.ps1 -Set @{ mI = 500 }    # 設定を上書き（キーは「設定保存」の JSON と同じ）
+.\sim.ps1 -Config cfg.json      # 「設定保存」で書き出した JSON で実行
+.\sim.ps1 -Json                 # 結果を JSON で出力
+.\sim.ps1 -Open                 # 画面付きのアプリを開く
+```

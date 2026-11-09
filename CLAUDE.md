@@ -8,6 +8,7 @@
 - sw.js は同一オリジンを cache:'no-cache' で再検証する（更新時に古い app.js が混ざる事故の対策）
 - **ファイル間の契約は `docs/spec-v2.md`**（cfg キー・単位・関数・予約名）。キーを足すときは physics.js の PHYS_DEFAULTS と app.js の SCHEMA の両方
 - cfg の位置は常に先端基準 mm（諸元表は後端基準、変換は specsheet と UI の posRef 表示だけ）。cfg を変える経路は applyCfg に一本化
+- PowerShell から実行: `.\sim.ps1`（飛行結果を表示）／`-Debug`（Debug 諸元）／`-Set @{ mI = 500 }`（設定を上書き）／`-Config 設定.json`／`-Json`／`-Open`（画面付きで開く）。中身は test/cli.html をヘッドレス Chrome で開いて結果を読む。.ps1 は **BOM 付き UTF-8** で保存すること（Windows PowerShell 5.1 は BOM なしだと文字化けする）
 - テスト: `bash test/headless.sh`（ヘッドレス Chrome）で test/*.html を実行し `PASS n / FAIL m` を確認。test/fixtures/ は gitignore（実際の諸元表 xlsx・スクショ用ハーネス）
 - 入力欄は `SCHEMA` から自動生成（数値項目は掃引の候補にも自動で出る）。DEFAULTS は normalizeCfg(PHYS_DEFAULTS) から作る
 - 単位: UI は mm/g/deg、内部は SI。座標 x=東 y=北 z=上

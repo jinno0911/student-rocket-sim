@@ -1,0 +1,25 @@
+<!doctype html>
+<html lang="ja"><head><meta charset="utf-8"><title>シミュレーション（コマンドライン用）</title></head>
+<body>
+<!-- sim.ps1 がヘッドレス Chrome で開いて結果を読む。?preset=debug（Debug 諸元）・?cfg=<URL エンコードした JSON>（上書きする設定） -->
+<pre id="out">running…</pre>
+<script src="../geo.js"></script>
+<script src="../terrain.js"></script>
+<script src="../physics.js"></script>
+<script src="../specsheet.js"></script>
+<script>
+(() => {
+  const q = new URLSearchParams(location.search);
+  let out;
+  try {
+    let c = {};
+    if (q.get('preset') === 'debug') c = { ...window.SpecSheet.DEBUG_PRESET };
+    if (q.get('cfg')) c = { ...c, ...JSON.parse(q.get('cfg')) };
+    const cfg = normalizeCfg(c), M = buildModel(cfg), sim = simulate(M, { seed: 1 });
+    out = { ok: !(sim.ev && sim.ev.error), error: sim.ev && sim.ev.error || null, assumedThrust: cfg.thrustKind === 'assumed',
+            summary: flightSummary(M, sim), review: (() => { try { return reviewValues(M); } catch (e) { return null; } })() };
+  } catch (e) { out = { ok: false, error: String(e && e.message || e) }; }
+  document.getElementById('out').textContent = JSON.stringify(out);
+})();
+</script>
+</body></html>

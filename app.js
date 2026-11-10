@@ -17,39 +17,36 @@ const SCHEMA = (() => {
   const dia = c => c.chuteSpec !== 'velocity', vel = c => c.chuteSpec === 'velocity';
   const ref = c => c === 'magnetic' ? '磁北基準' : '真北基準';
   const REF = [['true', '真北'], ['magnetic', '磁北']];
-  // 下段ブースタの入力欄（位置はその段の前端から）
-  const boosterGroup = (p, group, show) => ({ group, show, fields: [
-    { k: p + 'Len', l: '段の長さ', u: 'mm', min: 10, step: 10 },
-    { k: p + 'D', l: '段の外径', u: 'mm', min: 5, step: 1 },
+  // 上の段（最上段・中段）の入力欄。位置は機体先端から。below = すぐ下の段の呼び名
+  const stageGroup = (p, group, show, below) => ({ group, show, fields: [
+    { k: p + 'Sep', l: 'この段の後端（分離面）の位置', u: 'mm', min: 10, step: 10, pos: true, wide: true },
     { k: p + 'Mass', l: '質量（推進剤を除く）', u: 'g', min: 1, step: 10 },
-    { k: p + 'CG', l: '重心（段の前端から）', u: 'mm', min: 0, step: 5 },
+    { k: p + 'CG', l: '重心', u: 'mm', min: 0, step: 5, pos: true },
     { k: p + 'Prop', l: '推進剤質量', u: 'g', min: 0, step: 10 },
-    { k: p + 'PropCG', l: '推進剤の重心（段の前端から）', u: 'mm', min: 0, step: 5 },
+    { k: p + 'MotorLen', l: 'モーター長（段の後端から）', u: 'mm', min: 10, step: 10 },
     { k: p + 'Src', l: '推力データ', t: 'select', wide: true, o: [['param', 'パラメトリック'], ['eng', '推力表を貼付（.eng / t,F）']] },
     { k: p + 'I', l: '総力積', u: 'N·s', min: 0.1, step: 10, show: c => c[p + 'Src'] === 'param' },
     { k: p + 'Tb', l: '燃焼時間', u: 's', min: 0.05, step: 0.1, show: c => c[p + 'Src'] === 'param' },
     { k: p + 'Shape', l: '推力形状', t: 'select', wide: true, o: SHAPES, show: c => c[p + 'Src'] === 'param' },
     { k: p + 'Eng', l: '推力表（1行 = 時刻s 推力N）', t: 'textarea', rows: 4, show: c => c[p + 'Src'] === 'eng' },
-    { k: p + 'SepDelay', l: '燃焼終了〜分離', u: 's', min: 0, step: 0.1 },
-    { k: p + 'IgnDelay', l: '分離〜次段の点火', u: 's', min: 0, step: 0.1 },
+    { k: p + 'SepDelay', l: `${below}の燃焼終了〜分離`, u: 's', min: 0, step: 0.1 },
+    { k: p + 'IgnDelay', l: '分離〜この段の点火', u: 's', min: 0, step: 0.1 },
     { k: p + 'FinN', l: 'フィン枚数', min: 2, max: 8, step: 1 },
     { k: p + 'FinCr', l: '翼根コード', u: 'mm', min: 1, step: 5 },
     { k: p + 'FinCt', l: '翼端コード', u: 'mm', min: 0, step: 5 },
-    { k: p + 'FinSpan', l: 'スパン', u: 'mm', min: 0, step: 5 },
+    { k: p + 'FinSpan', l: 'スパン（0 = フィンなし）', u: 'mm', min: 0, step: 5 },
     { k: p + 'FinSweep', l: '前縁後退長', u: 'mm', step: 5 },
     { k: p + 'FinAft', l: '翼根後縁〜段の後端', u: 'mm', step: 5 },
     { k: p + 'FinThick', l: 'フィン厚さ', u: 'mm', min: 0.1, step: 0.5 },
-    { k: p + 'Vt', l: '落下時の終端速度（0=パラなし）', u: 'm/s', min: 0, step: 1 },
-    { k: p + 'ChuteDelay', l: '分離〜開傘', u: 's', min: 0, step: 0.5, show: c => c[p + 'Vt'] > 0 },
+    { k: p + 'DropVt', l: `切り離した${below}の終端速度（0=パラなし）`, u: 'm/s', min: 0, step: 1, wide: true },
+    { k: p + 'DropChuteDelay', l: '分離〜開傘', u: 's', min: 0, step: 0.5, show: c => c[p + 'DropVt'] > 0 },
   ] });
   return [
     { group: '基本', open: true, fields: [
       { k: 'name', l: '機体名', t: 'text', wide: true },
       { k: 'posRef', l: '位置の表示基準', t: 'select', wide: true, o: [['nose', '機体先端から'], ['aft', '機体後端から（諸元表の様式）']] },
-      { k: 'stageCount', l: '段数（多段式では下の機体・モーター・回収系が最上段）', t: 'select', wide: true, o: [['1', '1 段式'], ['2', '2 段式'], ['3', '3 段式']], num: true },
+      { k: 'stageCount', l: '段数（多段式は下の機体を分離面で分割。元のモーターとフィンが 1 段目）', t: 'select', wide: true, o: [['1', '1 段式'], ['2', '2 段式'], ['3', '3 段式']], num: true },
     ] },
-    boosterGroup('b1', '下段ブースタ: 1段目（最初に点火）', c => c.stageCount >= 2),
-    boosterGroup('b2', '下段ブースタ: 2段目（3 段式の中段）', c => c.stageCount >= 3),
     { group: '機体', open: true, fields: [
       { k: 'noseShape', l: 'ノーズ形状', t: 'select', o: [['ogive', 'オジャイブ'], ['cone', 'コーン'], ['parabolic', '放物線'], ['elliptic', '楕円']] },
       { k: 'noseLen', l: 'ノーズ長', u: 'mm', min: 5, step: 5 },
@@ -110,6 +107,8 @@ const SCHEMA = (() => {
       { k: 'thrustScale', l: '推力倍率（気温・個体差）', u: '%', min: 1, step: 1 },
       { k: 'nozzleExitD', l: 'ノズル出口直径（0=圧力推力補正なし）', u: 'mm', min: 0, step: 1 },
     ] },
+    stageGroup('mid', '2段目（3 段式の中段）', c => c.stageCount >= 3, '1段目'),
+    stageGroup('up', '最上段（分離後に点火）', c => c.stageCount >= 2, '下の段'),
     { group: '回収系（多段式では最上段）', fields: [
       { k: 'rec1', l: '1段目の開傘条件', t: 'select', wide: true, o: [['apogee', '頂点検知'], ['ignition', '点火からのタイマー'], ['burnout', '作動終了からのタイマー'], ['none', 'なし（弾道落下）']] },
       { k: 'rec1Time', l: 'タイマー時間', u: 's', min: 0, step: 0.5, show: c => c.rec1 === 'ignition' || c.rec1 === 'burnout' },
@@ -422,9 +421,10 @@ function renderAll() {
 function drawRocket() {
   const cv = $('#cvRocket'), { ctx, w, h } = prep(cv), F = model;
   if (!F) return;
-  const M = F.top || F, ST = F.stack ? F.stack.stages : [];   // 機体の輪郭は最上段、その下に下段ブースタを描く
+  const M = F.orig || F, T = F.top || F, ST = F.stack ? F.stack.stages : [];   // 輪郭は元の機体（打上げ時の全体）。多段式は分離面と上の段のフィン・モーターを重ねる
+  const upFins = F.stack ? [{ xr: T.Xb, Cr: T.Cr, Ct: T.Ct, Xs: T.Xs, sp: T.s, R: T.R }, ...ST.slice(1).map(b => ({ xr: b.x0 + b.L - b.finAft - b.Cr, Cr: b.Cr, Ct: b.Ct, Xs: b.Xs, sp: b.sp, R: b.R }))] : [];
   const xEnd = Math.max(F.L, M.L + cfg.mOver / 1000, M.Xb + Math.max(M.Cr, M.Xs + M.Ct));
-  const halfH = Math.max(M.R + M.s, ...ST.map(b => b.R + b.sp));
+  const halfH = Math.max(M.R + M.s, ...upFins.map(f => f.R + f.sp));
   const sc = Math.min((w - 40) / xEnd, (h - 56) / (2 * halfH));
   const ox = 20, oy = h / 2 + 6;
   const X = x => ox + x * sc, Y = r => oy - r * sc;
@@ -436,49 +436,54 @@ function drawRocket() {
   for (let i = 40; i >= 0; i--) { const x = M.Ln * i / 40; ctx.lineTo(X(x), Y(-noseR(M, x))); }
   ctx.closePath(); ctx.fillStyle = '#232326'; ctx.fill(); ctx.strokeStyle = '#b8b8bd'; ctx.lineWidth = 1.2; ctx.stroke();
   ctx.strokeStyle = '#b8b8bd55'; ctx.beginPath(); ctx.moveTo(X(M.Ln), Y(M.R)); ctx.lineTo(X(M.Ln), Y(-M.R)); ctx.stroke();
-  // フィン
-  for (const sgn of [1, -1]) {
+  // フィン（元の機体 = 最下段）と、上の段のフィン
+  const fin = (f, fill) => { if (!(f.sp > 0)) return; for (const sgn of [1, -1]) {
     ctx.beginPath();
-    ctx.moveTo(X(M.Xb), Y(sgn * M.R)); ctx.lineTo(X(M.Xb + M.Xs), Y(sgn * (M.R + M.s)));
-    ctx.lineTo(X(M.Xb + M.Xs + M.Ct), Y(sgn * (M.R + M.s))); ctx.lineTo(X(M.Xb + M.Cr), Y(sgn * M.R)); ctx.closePath();
-    ctx.fillStyle = '#38383c'; ctx.fill(); ctx.strokeStyle = '#b8b8bd'; ctx.stroke();
+    ctx.moveTo(X(f.xr), Y(sgn * f.R)); ctx.lineTo(X(f.xr + f.Xs), Y(sgn * (f.R + f.sp)));
+    ctx.lineTo(X(f.xr + f.Xs + f.Ct), Y(sgn * (f.R + f.sp))); ctx.lineTo(X(f.xr + f.Cr), Y(sgn * f.R)); ctx.closePath();
+    ctx.fillStyle = fill; ctx.fill(); ctx.strokeStyle = '#b8b8bd'; ctx.lineWidth = 1.2; ctx.stroke();
+  } };
+  fin({ xr: M.Xb, Cr: M.Cr, Ct: M.Ct, Xs: M.Xs, sp: M.s, R: M.R }, '#38383c');
+  for (const f of upFins) fin(f, '#2e2e32');
+  // モーター（破線）
+  ctx.setLineDash([4, 3]); ctx.strokeStyle = '#ff9b3d'; ctx.lineWidth = 1.2;
+  ctx.strokeRect(X(M.motorX - M.mLen / 2), Y(M.mDia / 2), M.mLen * sc, M.mDia * sc);
+  if (F.stack) {
+    ctx.strokeRect(X(T.motorX - T.mLen / 2), Y(T.mDia / 2), T.mLen * sc, T.mDia * sc);
+    for (const b of ST.slice(1)) { const ml = 2 * (b.L - b.xProp); ctx.strokeRect(X(b.x0 + b.L - ml), Y(T.mDia / 2), ml * sc, T.mDia * sc); }
   }
-  // モーター
-  ctx.setLineDash([4, 3]); ctx.strokeStyle = '#ff9b3d';
-  ctx.strokeRect(X(M.motorX - M.mLen / 2), Y(M.mDia / 2), M.mLen * sc, M.mDia * sc); ctx.setLineDash([]);
-  // 下段ブースタ
-  for (const b of ST) {
-    ctx.fillStyle = '#1c1c1e'; ctx.strokeStyle = '#8e8e93'; ctx.lineWidth = 1.2;
-    ctx.fillRect(X(b.x0), Y(b.R), b.L * sc, b.d * sc); ctx.strokeRect(X(b.x0), Y(b.R), b.L * sc, b.d * sc);
-    const xr = b.x0 + b.L - b.finAft - b.Cr;
-    if (b.sp > 0) for (const sgn of [1, -1]) {
-      ctx.beginPath(); ctx.moveTo(X(xr), Y(sgn * b.R)); ctx.lineTo(X(xr + b.Xs), Y(sgn * (b.R + b.sp)));
-      ctx.lineTo(X(xr + b.Xs + b.Ct), Y(sgn * (b.R + b.sp))); ctx.lineTo(X(xr + b.Cr), Y(sgn * b.R)); ctx.closePath();
-      ctx.fillStyle = '#2e2e32'; ctx.fill(); ctx.stroke();
+  ctx.setLineDash([]);
+  // 分離面と段の番号
+  if (F.stack) {
+    const n = ST.length + 1, parts = [...ST.map(b => ({ no: b.no, x0: b.x0, x1: b.x0 + b.L })), { no: n, x0: 0, x1: T.L }];
+    ctx.font = '11px system-ui'; ctx.textAlign = 'center';
+    for (const q of parts) {
+      if (q.x0 > 0) { ctx.strokeStyle = '#ececec'; ctx.lineWidth = 1.5; ctx.beginPath(); ctx.moveTo(X(q.x0), Y(M.R) - 5); ctx.lineTo(X(q.x0), Y(-M.R) + 5); ctx.stroke(); }
+      ctx.fillStyle = '#8e8e93'; ctx.textAlign = 'left'; ctx.fillText(`${q.no}段目`, X(q.no === n ? M.Ln : q.x0) + 6, Y(-M.R) + 13);
     }
-    ctx.fillStyle = '#c4c4c8'; ctx.font = '11px system-ui'; ctx.textAlign = 'center'; ctx.fillText(`${b.no}段目`, X(b.x0 + b.L / 2), Y(0) + 4);
   }
   // バラスト
   if (cfg.ballast > 0) { ctx.fillStyle = '#c9a227'; ctx.beginPath(); ctx.arc(X(cfg.ballastPos / 1000), Y(0), 4, 0, 7); ctx.fill(); }
   // ペイロード（重心位置に □）
-  if (M.payloadOn ?? cfg.payloadOn) { ctx.strokeStyle = PH_COL.pay; ctx.lineWidth = 2; ctx.strokeRect(X(cfg.payloadPos / 1000) - 5, Y(0) - 5, 10, 10); }
+  if (T.payloadOn ?? cfg.payloadOn) { ctx.strokeStyle = PH_COL.pay; ctx.lineWidth = 2; ctx.strokeRect(X(cfg.payloadPos / 1000) - 5, Y(0) - 5, 10, 10); }
   // CG / CP
   const m0 = F.massAt(0), m1 = F.massAt(F.tEnd), cp = F.cpAt(0);
-  const pl = x => f0(F.stack ? x * 1000 : posDisp(x * 1000));   // 表示は posRef に合わせる（多段は全段の先端基準）
-  const mark = (x, col, label, up, hollow) => {
+  const pl = x => f0(posDisp(x * 1000));   // 表示は posRef に合わせる
+  const mark = (x, col, label, up, hollow, align = 'center') => {
     const px = X(x), py = Y(0);
     ctx.lineWidth = 2; ctx.strokeStyle = col; ctx.fillStyle = col;
     ctx.beginPath(); ctx.arc(px, py, 6, 0, 7); hollow ? ctx.stroke() : ctx.fill();
-    ctx.font = '11px system-ui'; ctx.textAlign = 'center';
+    ctx.font = '11px system-ui'; ctx.textAlign = align;
     const ty = up ? Y(halfH) - 6 : Y(-halfH) + 14;
     ctx.beginPath(); ctx.moveTo(px, py + (up ? -7 : 7)); ctx.lineTo(px, ty + (up ? 2 : -11)); ctx.globalAlpha = .5; ctx.lineWidth = 1; ctx.stroke(); ctx.globalAlpha = 1;
-    ctx.fillText(label, px, ty);
+    ctx.fillText(label, px + (align === 'left' ? -3 : align === 'right' ? 3 : 0), ty);
   };
-  mark(m0.cg, '#7aa2ff', `CG ${pl(m0.cg)}`, true);
-  mark(m1.cg, '#7aa2ff', `${F.stack ? '最上段 ' : ''}燃焼後 ${pl(m1.cg)}`, false, true);
-  mark(cp.xcp, '#ff6b8b', `CP ${pl(cp.xcp)}`, true);
+  const near = Math.abs(X(m0.cg) - X(cp.xcp)) < 64, cgLeft = m0.cg <= cp.xcp;   // CG と CP が近いときはラベルを左右に振り分ける
+  mark(m0.cg, '#7aa2ff', `CG ${pl(m0.cg)}`, true, false, near ? (cgLeft ? 'right' : 'left') : 'center');
+  mark(m1.cg, '#7aa2ff', `${F.stack ? '最上段の' : ''}燃焼後 ${pl(m1.cg)}`, false, true);
+  mark(cp.xcp, '#ff6b8b', `CP ${pl(cp.xcp)}`, true, false, near ? (cgLeft ? 'left' : 'right') : 'center');
   ctx.fillStyle = CHART_CSS.text; ctx.textAlign = 'left'; ctx.font = '11px system-ui';
-  ctx.fillText(`全長 ${(F.L * 1000).toFixed(0)} mm  /  単位: mm（${F.stack ? '全段の先端' : cfg.posRef === 'aft' ? '後端' : '先端'}基準）`, 8, 14);
+  ctx.fillText(`全長 ${(F.L * 1000).toFixed(0)} mm  /  単位: mm（${cfg.posRef === 'aft' ? '後端' : '先端'}基準）`, 8, 14);
 }
 function renderStatic() {
   const M = model; if (!M) { $('#staticInfo').innerHTML = ''; return; }
@@ -613,7 +618,6 @@ function renderWarnings() {
       else if (e.ign.tilt > 15) add('warn', `${e.stage}段目の点火時に鉛直から ${e.ign.tilt.toFixed(0)}° 傾いています`);
       if (e.ign.V < 30) add('warn', `${e.stage}段目の点火時の速度が低い（${e.ign.V.toFixed(0)} m/s）。フィンが効かず姿勢が乱れやすい`);
     }
-    if (M.stack.stages.some(b => b.d > M.top.d * 1.5)) add('warn', '下段と最上段の径の差が大きく、段間の抗力・安定性の推定誤差が大きくなります');
     add('warn', '多段式は段間の分離衝撃・点火遅れのばらつきを含みません。実機の点火シーケンスの安全確認は別途必要です');
   }
   const tw = M.stack ? M.stack.stages[0].Itot / Math.max(M.stack.stages[0].tb, 1e-6) / (m0.m * G0) : M.Itot / Math.max(M.tb, 1e-6) / (m0.m * G0);
@@ -674,7 +678,7 @@ function renderReview() {
   const ta = rv.trueAzim_deg, ref = r => r === 'magnetic' ? '磁北' : '真北';
   const warns = [...(M.warn || [])], dc = usesDecl() ? declCheck(cfg.lat, cfg.lon, declNow()) : null; if (dc) warns.push(dc);
   const nW = warns.length + (cfg.thrustKind === 'assumed' ? 1 : 0);
-  sum.innerHTML = `諸元表チェック <span class="muted">（審査用計算値・後端基準${M.stack ? '・最上段' : ''}）</span>　<span class="rv-pill">真方位 ${f1(ta)}°</span>`
+  sum.innerHTML = `諸元表チェック <span class="muted">（審査用計算値・後端基準${M.stack ? '・最上段のみ' : ''}）</span>　<span class="rv-pill">真方位 ${f1(ta)}°</span>`
     + (Number.isFinite(rv.fstWet_pct) ? `<span class="rv-pill">Fst ${f1(rv.fstWet_pct)} %</span>` : '')
     + (nW ? `<span class="rv-pill warn">注意 ${nW} 件</span>` : '');
   const windTrue = ((cfg.windFrom + (cfg.windDirRef === 'magnetic' ? cfg.magDecl : 0)) % 360 + 360) % 360;

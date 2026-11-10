@@ -45,7 +45,8 @@ window.V3D = (() => {
   }
 
   // ---------- ラベル ----------
-  function label(text, color = '#ececec', size = 1) {
+  // pri: 小さいほど優先（重なったときに残す）
+  function label(text, color = '#ececec', size = 1, pri = 5) {
     const cv = document.createElement('canvas'), ctx = cv.getContext('2d');
     ctx.font = 'bold 40px system-ui, sans-serif';
     const w = Math.ceil(ctx.measureText(text).width) + 24;
@@ -58,7 +59,7 @@ window.V3D = (() => {
     sp.scale.set(0.045 * size * w / 60, 0.045 * size, 1);
     sp.center.set(0, 0);
     sp.renderOrder = 10;
-    sp.userData.base = sp.scale.clone(); sprites.push(sp);
+    sp.userData.base = sp.scale.clone(); sp.userData.label = true; sp.userData.pri = pri; sprites.push(sp);
     return sp;
   }
 
@@ -84,7 +85,7 @@ window.V3D = (() => {
     sh.lineTo(M.R + M.s, cg - M.Xb - M.Xs - M.Ct);
     sh.lineTo(M.R * 0.98, cg - M.Xb - M.Cr);
     sh.closePath();
-    const th = Math.max(cfg.finThick / 1000, 0.001);
+    const th = Math.max((M.c ? M.c.finThick : cfg.finThick) / 1000, 0.001);
     const fg = new THREE.ExtrudeGeometry(sh, { depth: th, bevelEnabled: false });
     fg.translate(0, 0, -th / 2);
     for (let i = 0; i < M.N; i++) {
@@ -94,7 +95,7 @@ window.V3D = (() => {
     const fl = new THREE.Mesh(new THREE.ConeGeometry(M.mDia * 0.45, M.L * 0.45, 20, 1, true),
       new THREE.MeshBasicMaterial({ color: 0xffa040, transparent: true, opacity: 0.85, side: THREE.DoubleSide, depthWrite: false }));
     fl.geometry.rotateX(Math.PI); fl.geometry.translate(0, -M.L * 0.225, 0);
-    fl.position.y = cg - M.L - cfg.mOver / 1000;
+    fl.position.y = cg - M.L - (M.c ? M.c.mOver : cfg.mOver) / 1000;
     const core = new THREE.Mesh(new THREE.ConeGeometry(M.mDia * 0.25, M.L * 0.25, 16, 1, true),
       new THREE.MeshBasicMaterial({ color: 0xfff2c0, transparent: true, opacity: 0.95, depthWrite: false }));
     core.geometry.rotateX(Math.PI); core.geometry.translate(0, -M.L * 0.125, 0);
@@ -156,8 +157,8 @@ window.V3D = (() => {
     const st = gridStep(), grid = new THREE.GridHelper(st * 60, 60, 0x3b5a44, 0x2a4232);
     grid.position.y = 0.02; root.add(grid);
     // 方位
-    const n = label('N', '#ff8a8a', 1.2); n.position.copy(V(0, ext * 1.1, 0)); root.add(n);
-    const e = label('E', '#c8d3ea'); e.position.copy(V(ext * 1.1, 0, 0)); root.add(e);
+    const n = label('N', '#ff8a8a', 1.2, 9); n.position.copy(V(0, ext * 1.1, 0)); root.add(n);
+    const e = label('E', '#c8d3ea', 1, 9); e.position.copy(V(ext * 1.1, 0, 0)); root.add(e);
     // ランチャー
     const u0 = V(Math.cos(M.elev) * Math.sin(M.azim), Math.cos(M.elev) * Math.cos(M.azim), Math.sin(M.elev));
     const railLen = M.railLen * Math.max(1, visScale * 0.6);
@@ -166,12 +167,12 @@ window.V3D = (() => {
     rail.quaternion.setFromUnitVectors(Y_UP, u0); root.add(rail);
     const pad = new THREE.Mesh(new THREE.CylinderGeometry(0.6 * visScale, 0.8 * visScale, 0.1 * visScale, 24), new THREE.MeshStandardMaterial({ color: 0x555d6b }));
     root.add(pad);
-    const lp = label('射点', '#ffffff'); lp.position.set(0, 0, 0); root.add(lp);
+    const lp = label('射点', '#ffffff', 1, 3); lp.position.set(0, 0, 0); root.add(lp);
     // 風
     const wd = V(M.wdir[0], M.wdir[1], 0).normalize();
     const wa = new THREE.ArrowHelper(wd, V(-M.wdir[0] * ext * 0.6, -M.wdir[1] * ext * 0.6, ext * 0.02), ext * 0.2, 0x4fc3f7, ext * 0.05, ext * 0.025);
     root.add(wa);
-    const wl = label(`風 ${cfg.wind} m/s（高度 ${cfg.windRef} m）`, '#4fc3f7'); wl.position.copy(V(-M.wdir[0] * ext * 0.6, -M.wdir[1] * ext * 0.6, ext * 0.05)); root.add(wl);
+    const wl = label(`風 ${cfg.wind} m/s（高度 ${cfg.windRef} m）`, '#4fc3f7', 1, 8); wl.position.copy(V(-M.wdir[0] * ext * 0.6, -M.wdir[1] * ext * 0.6, ext * 0.05)); root.add(wl);
 
     // 軌跡（フェーズ別の頂点色）
     const P = [], C = [], S = [], col = new THREE.Color();
@@ -190,22 +191,23 @@ window.V3D = (() => {
     const shadow = mkLine(S, 0.18); root.add(shadow);
     // マーカー
     const ev = sim.ev;
-    const mark = (r, text, color, below) => {   // below: ラベルを点の下に出す（頂点と 1段目開傘などが重ならないように）
+    const mark = (r, text, color, below, pri = 5) => {   // below: ラベルを点の下に出す
       const s = new THREE.Sprite(new THREE.SpriteMaterial({ map: dotTex(), color, sizeAttenuation: false, depthTest: false, transparent: true }));
       s.scale.set(0.02, 0.02, 1); s.userData.base = s.scale.clone(); sprites.push(s);
       s.position.copy(V(r.x, r.y, r.z)); root.add(s);
-      const l = label(text, color); l.position.copy(s.position); if (below) l.center.set(0, 1.15); root.add(l);
+      const l = label(text, color, 1, pri); l.position.copy(s.position); if (below) l.center.set(0, 1.15); root.add(l);
     };
     const at = t => rec.find(q => q.t >= t) || rec[rec.length - 1];
-    if (ev.burnout) mark(at(ev.burnout.t), '燃焼終了', PH_COL.pow);
-    if (ev.apogee) mark(at(ev.apogee.t), `頂点 ${ev.apogee.z.toFixed(0)} m`, '#ffffff');
+    if (ev.burnout) mark(at(ev.burnout.t), '燃焼終了', PH_COL.pow, false, 6);
+    for (const e of ev.stages || []) if (e.sep) mark(at(e.sep.t), `${e.stage}段目 分離`, '#7fc4d9', true, 6);
+    if (ev.apogee) mark(at(ev.apogee.t), `頂点 ${ev.apogee.z.toFixed(0)} m`, '#ffffff', false, 1);
     if (ev.deploy1 && !ev.deploy2?.beforeDeploy1) mark(at(ev.deploy1.t), `${chuteName(1)}開傘`, PH_COL.c1, true);
     if (ev.deploy2) mark(at(ev.deploy2.t), ev.deploy2.beforeDeploy1 ? `${chuteName(1)}・${chuteName(2)} 同時開傘` : `${chuteName(2)}開傘`, PH_COL.c2);
-    if (ev.payload) mark(at(ev.payload.t), 'ペイロード放出', PH_COL.pay, true);
+    if (ev.payload) mark(at(ev.payload.t), 'ペイロード放出', PH_COL.pay, true, 7);
     if (ev.landing) {
       const ring = new THREE.Mesh(new THREE.RingGeometry(ext * 0.012, ext * 0.018, 32), new THREE.MeshBasicMaterial({ color: 0xff6b8b, side: THREE.DoubleSide }));
       ring.rotation.x = -Math.PI / 2; ring.position.copy(V(ev.landing.x, ev.landing.y, 0.5)); root.add(ring);
-      const l = label(`着地 ${Math.hypot(ev.landing.x, ev.landing.y).toFixed(0)} m`, '#ff6b8b'); l.position.copy(ring.position); root.add(l);
+      const l = label(`着地 ${Math.hypot(ev.landing.x, ev.landing.y).toFixed(0)} m`, '#ff6b8b', 1, 2); l.position.copy(ring.position); root.add(l);
     }
     // 機体・パラ
     const R = buildRocket(M.top || M); rocket = R.g; flame = R.flame;
@@ -222,18 +224,18 @@ window.V3D = (() => {
       if (PL) {
         const ring = new THREE.Mesh(new THREE.RingGeometry(ext * 0.010, ext * 0.015, 32), new THREE.MeshBasicMaterial({ color: PH_COL.pay, side: THREE.DoubleSide }));
         ring.rotation.x = -Math.PI / 2; ring.position.copy(V(PL.x, PL.y, 0.6)); root.add(ring);
-        const l = label(`ペイロード着地 ${Math.hypot(PL.x, PL.y).toFixed(0)} m`, PH_COL.pay); l.position.copy(ring.position); root.add(l);
+        const l = label(`ペイロード着地 ${Math.hypot(PL.x, PL.y).toFixed(0)} m`, PH_COL.pay, 1, 4); l.position.copy(ring.position); root.add(l);
       }
       const g = new THREE.Group(), cap = buildCapsule(M.R * 0.8, Math.max(M.d * 2.5, 0.08)); g.add(cap);
       g.scale.setScalar(visScale); root.add(g);
       const pc = buildChute([0.77, 0.55, 1]); root.add(pc.g);
       const pb = new THREE.Sprite(new THREE.SpriteMaterial({ map: dotTex(), color: PH_COL.pay, sizeAttenuation: false, depthTest: false, transparent: true }));
       pb.scale.set(0.018, 0.018, 1); pb.userData.base = pb.scale.clone(); sprites.push(pb); pb.renderOrder = 11; root.add(pb);
-      const lbl = label('ペイロード', PH_COL.pay, 0.8); lbl.center.set(1.08, 0.5); root.add(lbl);   // 本体のラベルと重ならないよう左側に出す
+      const lbl = label('ペイロード', PH_COL.pay, 0.8, 7); lbl.center.set(1.08, 0.5); lbl.userData.dyn = true; root.add(lbl);   // 本体のラベルと重ならないよう左側に出す
       pay = { g, chute: pc.g, line, beacon: pb, lbl, n: prec.length };
     }
     peakT = Math.max(...M.pts.map(p => p[1]), 1);
-    // 多段: 下段ブースタ（機体の子）と、切り離した段の落下
+    // 多段: 下の段（機体の子）と、切り離した段の落下
     boosters = []; dropObjs = []; cg0Top = (M.top || M).massAt(0).cg;
     if (M.stack) {
       M.stack.stages.forEach(b => { const g = buildBooster(b, cg0Top); rocket.add(g); boosters.push(g); });
@@ -247,7 +249,7 @@ window.V3D = (() => {
         if (d.landing) {
           const ring = new THREE.Mesh(new THREE.RingGeometry(ext * 0.008, ext * 0.012, 32), new THREE.MeshBasicMaterial({ color: 0x7fc4d9, side: THREE.DoubleSide }));
           ring.rotation.x = -Math.PI / 2; ring.position.copy(V(d.landing.x, d.landing.y, 0.6)); root.add(ring);
-          const l = label(`${d.stage}段目 落下 ${Math.hypot(d.landing.x, d.landing.y).toFixed(0)} m`, '#7fc4d9'); l.position.copy(ring.position); root.add(l);
+          const l = label(`${d.stage}段目 落下 ${Math.hypot(d.landing.x, d.landing.y).toFixed(0)} m`, '#7fc4d9', 1, 4); l.position.copy(ring.position); root.add(l);
         }
         const bc = new THREE.Sprite(new THREE.SpriteMaterial({ map: dotTex(), color: 0x7fc4d9, sizeAttenuation: false, depthTest: false, transparent: true }));
         bc.scale.set(0.016, 0.016, 1); bc.userData.base = bc.scale.clone(); sprites.push(bc); bc.renderOrder = 11; root.add(bc);
@@ -301,16 +303,21 @@ window.V3D = (() => {
     o.ph = a.ph;
     return o;
   }
-  // 下段ブースタのメッシュ（機軸 +Y。cgRef = 原点に置く位置 [先端基準 m]）
+  // 下の段のメッシュ（機軸 +Y。cgRef = 原点に置く位置 [先端基準 m]）。最上段と同じ塗装にして、1 本の機体を分離面で分けた見た目にする
   function buildBooster(b, cgRef) {
-    const g = new THREE.Group(), m = c => new THREE.MeshStandardMaterial({ color: c, roughness: 0.5, metalness: 0.1, side: THREE.DoubleSide });
-    const body = new THREE.Mesh(new THREE.CylinderGeometry(b.R, b.R, b.L, 28), m(0xc9d6e4));
-    body.position.y = cgRef - b.x0 - b.L / 2; g.add(body);
+    const g = new THREE.Group(), m = (c, o = {}) => new THREE.MeshStandardMaterial({ color: c, roughness: 0.45, metalness: 0.1, side: THREE.DoubleSide, ...o });
+    const y0 = cgRef - b.x0, yT = cgRef - b.x0 - (b.L - b.tailLen), y1 = cgRef - b.x0 - b.L;
+    const pts = [new THREE.Vector2(1e-5, y0), new THREE.Vector2(b.R, y0), new THREE.Vector2(b.R, yT), new THREE.Vector2(b.tailD / 2, y1), new THREE.Vector2(1e-5, y1)];
+    g.add(new THREE.Mesh(new THREE.LatheGeometry(pts, 32), m(0xeef2f8)));
+    // 分離面の継ぎ目（段間リング）
+    const ringH = Math.min(b.d * 0.22, b.L * 0.2);
+    const ring = new THREE.Mesh(new THREE.CylinderGeometry(b.R * 1.012, b.R * 1.012, ringH, 32, 1, true), m(0x2b2f36, { metalness: 0.5, roughness: 0.35 }));
+    ring.position.y = y0 - ringH / 2; g.add(ring);
     if (b.sp > 0) {
       const xr = b.x0 + b.L - b.finAft - b.Cr, sh = new THREE.Shape();
       sh.moveTo(b.R * 0.98, cgRef - xr); sh.lineTo(b.R + b.sp, cgRef - xr - b.Xs); sh.lineTo(b.R + b.sp, cgRef - xr - b.Xs - b.Ct); sh.lineTo(b.R * 0.98, cgRef - xr - b.Cr); sh.closePath();
       const th = Math.max(b.finThick, 0.001), fg = new THREE.ExtrudeGeometry(sh, { depth: th, bevelEnabled: false }); fg.translate(0, 0, -th / 2);
-      for (let i = 0; i < b.N; i++) { const f = new THREE.Mesh(fg, m(0x2f7f9f)); f.rotation.y = 2 * Math.PI * i / b.N; g.add(f); }
+      for (let i = 0; i < b.N; i++) { const f = new THREE.Mesh(fg, m(0x2f5fd0)); f.rotation.y = 2 * Math.PI * i / b.N; g.add(f); }
     }
     return g;
   }
@@ -318,7 +325,7 @@ window.V3D = (() => {
     if (!boosters.length) return;
     const st = model.stack; let bottom = model.top.L;
     boosters.forEach((g, i) => { const on = playT < st.sep[i]; g.visible = on; if (on) bottom = Math.max(bottom, st.stages[i].x0 + st.stages[i].L); });
-    flame.position.y = cg0Top - bottom - (bottom === model.top.L ? cfg.mOver / 1000 : 0);
+    flame.position.y = cg0Top - bottom - (bottom === model.top.L ? 0 : cfg.mOver / 1000);   // 元のモーターは最下段
   }
   function updateDrops(time) {
     dropObjs.forEach(o => {
@@ -430,6 +437,38 @@ window.V3D = (() => {
   function fixSprites() {
     const k = Math.tan(camera.fov * Math.PI / 360) / Math.tan(25 * Math.PI / 180);
     for (const sp of sprites) sp.scale.set(sp.userData.base.x * k, sp.userData.base.y * k, 1);
+    declutter();
+  }
+  // ラベルが画面上で重ならないように置き直す。優先度の高い順に置き、重なるものは点の反対側へ逃がし、それでも重なれば隠す
+  const LABEL_SLOTS = [[0, 0], [0, 1.15], [1, 0], [1, 1.15], [0, -1.2], [0, 2.35], [1, -1.2], [1, 2.35]];   // center（アンカーに対するラベルの位置）
+  const _pv = new THREE.Vector3();
+  function declutter() {
+    const W = box.clientWidth || 1, H = box.clientHeight || 1, kpx = H / (2 * Math.tan(25 * Math.PI / 180)), pad = 3;
+    const items = [];
+    camera.updateMatrixWorld();
+    for (const sp of sprites) {
+      const u = sp.userData; if (!u.label) continue;
+      if (!u.c0) u.c0 = sp.center.clone();
+      const want = u.dyn ? sp.visible : true;   // 動くラベル（ペイロード）は毎フレーム先に表示状態が決まっている
+      if (!want) continue;
+      sp.getWorldPosition(_pv); _pv.project(camera);
+      if (_pv.z > 1 || _pv.z < -1) { sp.visible = false; continue; }
+      items.push({ sp, x: (_pv.x + 1) / 2 * W, y: (1 - _pv.y) / 2 * H, w: u.base.x * kpx, h: u.base.y * kpx, z: _pv.z });
+    }
+    items.sort((p, q) => p.sp.userData.pri - q.sp.userData.pri || p.z - q.z);
+    const placed = [];
+    const hit = r => placed.some(q => r[0] < q[2] + pad && r[2] > q[0] - pad && r[1] < q[3] + pad && r[3] > q[1] - pad);
+    for (const it of items) {
+      const u = it.sp.userData, c0 = u.c0, slots = [[c0.x, c0.y], ...LABEL_SLOTS.filter(q => q[0] !== c0.x || q[1] !== c0.y)];
+      let done = false;
+      for (const [cx, cy] of slots) {
+        // center (cx, cy): ラベルの左下からアンカーまでの割合。画面は y が下向き
+        const x0 = it.x - cx * it.w - (cx >= 1 ? 6 : 0), y1 = it.y + cy * it.h, r = [x0, y1 - it.h, x0 + it.w, y1];
+        if (hit(r)) continue;
+        it.sp.center.set(cx >= 1 ? cx + 0.04 : cx, cy); it.sp.visible = true; placed.push(r); done = true; break;
+      }
+      if (!done) it.sp.visible = false;
+    }
   }
   function loop(time) {
     requestAnimationFrame(loop);

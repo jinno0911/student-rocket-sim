@@ -606,7 +606,7 @@ window.SpecSheet = (() => {
     const MF = model && typeof model.massAt === 'function' ? model : buildModel(c);
     let S = sim;
     if (!S?.ev && typeof simulate === 'function') { try { S = simulate(MF); } catch (e) { S = null; } }
-    const M = MF.top || MF; // 団体入力シートと推力履歴は最上段（下段は「シミュレータ追加諸元」に入る）
+    const M = MF.top || MF; // 団体入力シートと推力履歴は最上段（段の諸元は「シミュレータ追加諸元」に入る）
     let rv = null;
     try { if (typeof reviewValues === 'function') rv = reviewValues(M); } catch (e) { rv = null; }
     const warnings = [], warn = s => { if (s && !warnings.includes(s)) warnings.push(s); };

@@ -94,12 +94,15 @@ const PHYS_DEFAULTS = {
   windModel: 'power', windProfile: '', windMaxH: 0,         // 風: べき法則 / 高度別プロファイル（"高度m,風速m/s,風向deg"）、べき法則の上限高度（0=無制限）
   cnaScale: 100, burnScale: 100, cgShift: 0, cpShift: 0, chuteScale: 100, chuteDelay: 0, // ばらつき（モンテカルロ・ラプラス近似で使用）
   thMinApogee: 0, thMaxQ: 0, thMinRailV: 0, thMaxRange: 0, // 性能閾値（0 で無効）
-  // 多段式: stageCount = 全段数（1〜3）。既存の機体入力は最上段。b1 = 最下段（最初に点火）、b2 = 中段（3 段式のとき）
+  // 多段式: stageCount = 全段数（1〜3）。機体入力（外形・質量・モーター・フィン）は「打上げ時の全体」で、それを分離面で分割する。
+  // 元のモーターとフィンは最下段（最初に点火）。up = 最上段、mid = 中段（3 段式のとき）。位置は機体先端から mm
+  // 質量は推進剤を除く値。最下段の質量 = 全体 − 上の段の合計。Sep = その段の後端（分離面）の位置
+  // SepDelay / IgnDelay / DropVt / DropChuteDelay は、その段のすぐ下の段の切り離しについての値
   stageCount: 1,
-  b1Len: 800, b1D: 80, b1Mass: 900, b1CG: 450, b1FinN: 4, b1FinCr: 180, b1FinCt: 80, b1FinSpan: 90, b1FinSweep: 80, b1FinAft: 0, b1FinThick: 3,
-  b1Src: 'param', b1I: 1590, b1Tb: 2.9, b1Shape: 'regressive', b1Prop: 800, b1PropCG: 550, b1Eng: '', b1SepDelay: 0.5, b1IgnDelay: 0.5, b1Vt: 0, b1ChuteDelay: 1,
-  b2Len: 600, b2D: 80, b2Mass: 600, b2CG: 300, b2FinN: 4, b2FinCr: 140, b2FinCt: 70, b2FinSpan: 70, b2FinSweep: 60, b2FinAft: 0, b2FinThick: 3,
-  b2Src: 'param', b2I: 700, b2Tb: 2.0, b2Shape: 'regressive', b2Prop: 370, b2PropCG: 400, b2Eng: '', b2SepDelay: 0.5, b2IgnDelay: 0.5, b2Vt: 0, b2ChuteDelay: 1,
+  upSep: 800, upMass: 700, upCG: 355, upProp: 180, upMotorLen: 200, upSrc: 'param', upI: 320, upTb: 1.5, upShape: 'regressive', upEng: '',
+  upFinN: 4, upFinCr: 80, upFinCt: 40, upFinSpan: 48, upFinSweep: 40, upFinAft: 0, upFinThick: 3, upSepDelay: 0.3, upIgnDelay: 0.5, upDropVt: 0, upDropChuteDelay: 1,
+  midSep: 1050, midMass: 420, midCG: 850, midProp: 180, midMotorLen: 200, midSrc: 'param', midI: 320, midTb: 1.5, midShape: 'regressive', midEng: '',
+  midFinN: 4, midFinCr: 80, midFinCt: 40, midFinSpan: 48, midFinSweep: 40, midFinAft: 0, midFinThick: 3, midSepDelay: 0.3, midIgnDelay: 0.5, midDropVt: 0, midDropChuteDelay: 1,
 };
 
 // 内部ヘルパー（トップレベル名を増やさないため 1 個にまとめる）
@@ -109,7 +112,7 @@ const PHYS_UTIL = (() => {
     posRef: ['nose', 'aft'], azimRef: ['true', 'magnetic'], windDirRef: ['true', 'magnetic'], landSurface: ['site', 'sea', 'terrain'], magMode: ['manual', 'auto'], windModel: ['power', 'profile'],
     massMode: ['motor', 'hybrid'], inertiaMode: ['auto', 'manual'], aeroMode: ['barrowman', 'manual'], thrustKind: ['measured', 'assumed'],
     rec1: ['apogee', 'ignition', 'burnout', 'none'], rec2: ['none', 'altitude', 'ignition'], chuteSpec: ['diameter', 'velocity'],
-    b1Src: ['param', 'eng'], b2Src: ['param', 'eng'], b1Shape: SHAPES.map(s => s[0]), b2Shape: SHAPES.map(s => s[0]),
+    upSrc: ['param', 'eng'], midSrc: ['param', 'eng'], upShape: SHAPES.map(s => s[0]), midShape: SHAPES.map(s => s[0]),
     cdMode: ['auto', 'manual'], noseShape: ['ogive', 'cone', 'parabolic', 'elliptic'], motorSrc: ['param', 'eng'], mShape: SHAPES.map(s => s[0]),
   };
   const NULLABLE = ['cmq', 'clp'];
@@ -539,35 +542,86 @@ function buildModel(c0) {
 }
 
 // ---------------- 多段式 ----------------
-// 最上段のモデル top に下段ブースタを積んだ「段ごとのモデル」を作る。位置はすべて最上段の先端基準 [m]
-// 戻り値 F: 点火時の全段（静的な表示用）。F.top = 最上段、F.stack = {stages, segs（各段の燃焼中の積み上げモデル）, ign, sep}
-function buildStack(top) {
-  const c = top.c, mm = 1e-3, gr = 1e-3, warn = top.warn;
+// 元の機体 orig（打上げ時の全体）を分離面で分割して「段ごとのモデル」を作る。位置はすべて機体先端基準 [m]
+// 最下段 = 元のモーターとフィン、その上の段は up*/mid* の入力。最下段の質量は全体から上の段を引いた残り
+// 戻り値 F: 点火時の全段（静的な表示用）。F.top = 最上段、F.orig = 元の機体、F.stack = {stages, segs（各段の燃焼中の積み上げモデル）, ign, sep}
+function buildStack(orig) {
+  let c = orig.c;                                          // 段の諸元を作るまでは元の機体の設定。その後は最上段の設定に切り替える
+  const mm = 1e-3, gr = 1e-3, warn = orig.warn, U = PHYS_UTIL;
+  const W = s => { if (!warn.includes(s)) warn.push(s); };
   const bs = Math.max(c.burnScale, 1) / 100, ts = c.thrustScale / 100;
-  const order = c.stageCount === 3 ? ['b1', 'b2'] : ['b1']; // 点火順（下から）
-  const stages = order.map((k, i) => {
-    const g = n => c[k + n];
-    let pts = null;
-    if (g('Src') === 'eng') { const e = parseEng(g('Eng')); if (e) pts = e.pts; else warn.push(`${i + 1}段目の推力表を読み取れなかったため、パラメトリック曲線を使いました`); }
-    if (!pts) pts = genCurve(g('Shape'), g('I'), g('Tb'));
-    pts = pts.map(p => [p[0] * bs, p[1] * ts / bs]);
+  const three = c.stageCount === 3, Lall = orig.L, minLen = 0.05;
+  // 分離面（先端から）: 最上段の後端 s1、3 段式は中段の後端 s2
+  let s1 = c.upSep * mm, s2 = three ? c.midSep * mm : Lall;
+  { const lo = orig.Ln + minLen, hi = Lall - minLen * (three ? 2 : 1), v = U.clamp(s1, lo, Math.max(lo, hi));
+    if (Math.abs(v - s1) > 1e-9) { W(`最上段の分離位置 ${U.fmt(c.upSep)} mm を ${U.fmt(v / mm)} mm にしました（ノーズより後ろ・機体後端より前）`); s1 = v; } }
+  if (three) { const lo = s1 + minLen, hi = Lall - minLen, v = U.clamp(s2, lo, Math.max(lo, hi));
+    if (Math.abs(v - s2) > 1e-9) { W(`中段の分離位置 ${U.fmt(c.midSep)} mm を ${U.fmt(v / mm)} mm にしました（最上段の分離位置より後ろ・機体後端より前）`); s2 = v; } }
+  if (c.aeroMode === 'manual') W('多段式では空力係数の直接入力を使わず、Barrowman 法で段ごとに計算します');
+  // 最上段: 元の機体の前側。質量・モーター・フィンは up* の入力
+  const inTop = x => x * mm < s1;
+  const top = buildModel({
+    ...c, stageCount: 1, bodyLen: (s1 - orig.Ln) / mm, tailLen: 0, massMode: 'motor', inertiaMode: 'auto', aeroMode: 'barrowman',
+    airMass: c.upMass, airCG: c.upCG - c.cgShift, ballast: inTop(c.ballastPos) ? c.ballast : 0, payloadOn: c.payloadOn && inTop(c.payloadPos),
+    motorSrc: c.upSrc, engText: c.upEng, mI: c.upI, mTb: c.upTb, mShape: c.upShape, mProp: c.upProp, mTotal: c.upProp, mLen: c.upMotorLen, mOver: 0, nozzleExitD: 0,
+    finN: c.upFinN, finCr: c.upFinCr, finCt: c.upFinCt, finSpan: c.upFinSpan, finSweep: c.upFinSweep, finAft: c.upFinAft, finThick: c.upFinThick,
+    thrustKind: 'measured',
+  });
+  for (const w of top.warn) W('最上段: ' + w);
+  top.warn = warn;
+  if (c.payloadOn && !inTop(c.payloadPos)) W('ペイロードの位置が最上段の外にあるため、ペイロードの放出を計算しません');
+  // 段の諸元 → 計算用の段。sp: {k, Len, D, Mass, CG, Prop, PropCG（段の前端から）, pts, フィン, SepDelay, IgnDelay, Vt, ChuteDelay}
+  const mkStage = (sp, i) => {
+    const pts = sp.pts;
     const cum = [0];
     for (let j = 1; j < pts.length; j++) cum.push(cum[j - 1] + (pts[j][1] + pts[j - 1][1]) / 2 * (pts[j][0] - pts[j - 1][0]));
     const Itot = cum[cum.length - 1], tb = pts[pts.length - 1][0];
-    if (!(Itot > 0)) warn.push(`${i + 1}段目の総力積が 0 です`);
+    if (!(Itot > 0)) W(`${i + 1}段目の総力積が 0 です`);
     const seg = t => { let lo = 0, hi = pts.length - 1; while (hi - lo > 1) { const m = (lo + hi) >> 1; if (pts[m][0] <= t) lo = m; else hi = m; } return lo; };
     const F = t => { if (t <= 0 || t >= tb) return 0; const j = seg(t), a = pts[j], b = pts[j + 1]; return a[1] + (b[1] - a[1]) * (t - a[0]) / Math.max(b[0] - a[0], 1e-12); };
     const cumAt = t => { if (t <= 0) return 0; if (t >= tb) return Itot; const j = seg(t); return cum[j] + (pts[j][1] + F(t)) / 2 * (t - pts[j][0]); };
-    const L = g('Len') * mm, d = g('D') * mm, R = d / 2, Cr = g('FinCr') * mm, Ct = g('FinCt') * mm, sp = g('FinSpan') * mm, Xs = g('FinSweep') * mm, N = Math.max(1, Math.round(g('FinN')));
-    const mDry = g('Mass') * gr, prop = g('Prop') * gr;
-    const lf = Math.hypot(sp, Xs + Ct / 2 - Cr / 2), nf = { 5: 0.97, 6: 0.948, 7: 0.9, 8: 0.865 }[N] ?? 1;
-    const cnaF = sp > 0 ? (1 + R / (sp + R)) * nf * 4 * N * (sp / d) ** 2 / (1 + Math.sqrt(1 + (2 * lf / Math.max(Cr + Ct, 1e-6)) ** 2)) : 0;
-    const xfLocal = L - g('FinAft') * mm - Cr + Xs * (Cr + 2 * Ct) / (3 * Math.max(Cr + Ct, 1e-9)) + (1 / 6) * ((Cr + Ct) - Cr * Ct / Math.max(Cr + Ct, 1e-9));
-    const Sf = (Cr + Ct) * sp / 2, kc = sp > 0 ? (Ct - Cr) / sp : 0, ac = Cr - kc * R, Fr = r => ac * r ** 3 / 3 + kc * r ** 4 / 4;
-    const rg2 = Sf > 0 ? (Fr(R + sp) - Fr(R)) / Sf : R * R;
-    return { k, no: i + 1, pts, F, cumAt, Itot, tb, L, d, R, Cr, Ct, sp, Xs, N, Sf, finThick: g('FinThick') * mm, finAft: g('FinAft') * mm, mDry, xDry: g('CG') * mm, prop, xProp: g('PropCG') * mm,
-      cnaF, xfLocal, rg2, sepDelay: Math.max(g('SepDelay'), 0), ignDelay: Math.max(g('IgnDelay'), 0), vt: g('Vt'), chuteDelay: Math.max(g('ChuteDelay'), 0) };
-  });
+    const L = sp.Len, d = sp.D, R = d / 2, Cr = sp.FinCr, Ct = sp.FinCt, span = sp.FinSpan, Xs = sp.FinSweep, N = Math.max(1, Math.round(sp.FinN));
+    const lf = Math.hypot(span, Xs + Ct / 2 - Cr / 2), nf = { 5: 0.97, 6: 0.948, 7: 0.9, 8: 0.865 }[N] ?? 1;
+    const cnaF = span > 0 ? (1 + R / (span + R)) * nf * 4 * N * (span / d) ** 2 / (1 + Math.sqrt(1 + (2 * lf / Math.max(Cr + Ct, 1e-6)) ** 2)) : 0;
+    const xfLocal = L - sp.FinAft - Cr + Xs * (Cr + 2 * Ct) / (3 * Math.max(Cr + Ct, 1e-9)) + (1 / 6) * ((Cr + Ct) - Cr * Ct / Math.max(Cr + Ct, 1e-9));
+    const Sf = (Cr + Ct) * span / 2, kc = span > 0 ? (Ct - Cr) / span : 0, ac = Cr - kc * R, Fr = r => ac * r ** 3 / 3 + kc * r ** 4 / 4;
+    const rg2 = Sf > 0 ? (Fr(R + span) - Fr(R)) / Sf : R * R;
+    return { k: sp.k, no: i + 1, pts, F, cumAt, Itot, tb, L, d, R, Cr, Ct, sp: span, Xs, N, Sf, finThick: sp.FinThick, finAft: sp.FinAft, mDry: sp.Mass, xDry: sp.CG, prop: sp.Prop, xProp: sp.PropCG,
+      cnaF, xfLocal, rg2, sepDelay: Math.max(sp.SepDelay, 0), ignDelay: Math.max(sp.IgnDelay, 0), vt: sp.Vt, chuteDelay: Math.max(sp.ChuteDelay, 0), tailLen: sp.tailLen || 0, tailD: sp.tailD || d };
+  };
+  // 中段（3 段式）: mid* の入力
+  let midSp = null;
+  if (three) {
+    let pts = null;
+    if (c.midSrc === 'eng') { const e = parseEng(c.midEng); if (e) pts = e.pts; else W('中段の推力表を読み取れなかったため、パラメトリック曲線を使いました'); }
+    if (!pts) pts = genCurve(c.midShape, c.midI, c.midTb);
+    const Len = s2 - s1;
+    midSp = { k: 'mid', Len, D: orig.d, Mass: c.midMass * gr, CG: U.clamp(c.midCG * mm - s1, 0, Len), Prop: c.midProp * gr, PropCG: Math.max(Len - c.midMotorLen * mm / 2, 0),
+      pts: pts.map(q => [q[0] * bs, q[1] * ts / bs]), FinN: c.midFinN, FinCr: c.midFinCr * mm, FinCt: c.midFinCt * mm, FinSpan: c.midFinSpan * mm, FinSweep: c.midFinSweep * mm,
+      FinAft: c.midFinAft * mm, FinThick: c.midFinThick * mm, SepDelay: c.upSepDelay, IgnDelay: c.upIgnDelay, Vt: c.upDropVt, ChuteDelay: c.upDropChuteDelay };
+    if (c.midCG * mm < s1 || c.midCG * mm > s2) W(`中段の重心 ${U.fmt(c.midCG)} mm が中段の範囲（${U.fmt(s1 / mm)}〜${U.fmt(s2 / mm)} mm）の外にあります`);
+  }
+  // 最下段: 元の機体（モーター・フィン・ボートテール）から上の段を引いた残り
+  const lowP = three ? 'mid' : 'up';
+  const x0L = three ? s2 : s1, LenL = Lall - x0L;
+  const w0 = orig.massAt(-1), w1 = orig.massAt(orig.tEnd + 1);
+  const propL = Math.max(w0.m - w1.m, 0), xPropL = propL > 1e-9 ? (w0.m * w0.cg - w1.m * w1.cg) / propL : Lall - LenL / 2;
+  const t1 = top.massAt(top.tEnd + 1);                     // 最上段（推進剤なし・ペイロードとバラスト込み）
+  const above = [[t1.m, t1.cg]]; if (midSp) above.push([midSp.Mass, s1 + midSp.CG]);
+  let mL = w1.m - above.reduce((a, q) => a + q[0], 0), xL = (w1.m * w1.cg - above.reduce((a, q) => a + q[0] * q[1], 0)) / mL;
+  if (!(mL > 0.02 * w1.m)) {
+    W(`上の段の質量の合計（${(above.reduce((a, q) => a + q[0], 0) / gr).toFixed(0)} g）が機体全体の燃焼後質量（${(w1.m / gr).toFixed(0)} g）以上です。最下段の質量を全体の 10 % として計算しました`);
+    mL = 0.1 * w1.m; xL = x0L + LenL / 2;
+  } else if (xL < x0L || xL > Lall) {
+    W(`最下段の重心が最下段の範囲の外になりました（先端から ${(xL / mm).toFixed(0)} mm）。機体全体の重心と上の段の質量・重心の入力を確認してください`);
+    xL = U.clamp(xL, x0L, Lall);
+  }
+  const lowSp = { k: 'low', Len: LenL, D: orig.d, Mass: mL, CG: xL - x0L, Prop: propL, PropCG: U.clamp(xPropL - x0L, 0, LenL), pts: orig.pts,
+    FinN: orig.N, FinCr: orig.Cr, FinCt: orig.Ct, FinSpan: c.finSpan * mm, FinSweep: c.finSweep * mm, FinAft: c.finAft * mm, FinThick: c.finThick * mm,
+    SepDelay: c[lowP + 'SepDelay'], IgnDelay: c[lowP + 'IgnDelay'], Vt: c[lowP + 'DropVt'], ChuteDelay: c[lowP + 'DropChuteDelay'], tailLen: orig.Lt || 0, tailD: orig.dBase };
+  if (orig.Cr + c.finAft * mm > LenL) W('元のフィンが最下段に収まっていません（分離面がフィンにかかっています）');
+  const stages = (midSp ? [lowSp, midSp] : [lowSp]).map(mkStage); // 点火順（下から）
+  c = top.c;
   // 段の位置（最上段の後端から下へ積む）: x0 = その段の前端の位置
   { let x = top.L; for (let i = stages.length - 1; i >= 0; i--) { stages[i].x0 = x; x += stages[i].L; } }
   // 時刻（点火・分離）: 分離 = 点火 + 作動時間 + 分離遅れ、次段の点火 = 分離 + 点火遅れ
@@ -578,7 +632,7 @@ function buildStack(top) {
   const cdRatio = top.cdEst > 0 ? top.cdAt(0) / top.cdEst : 1;
   // i 段目（点火順）が燃焼中の積み上げモデル。時刻は i 段目の点火からの時間
   const mkSeg = i => {
-    const att = stages.slice(i); // i 段目から上のブースタ
+    const att = stages.slice(i); // i 段目から上の段（最上段を除く）
     const L = att[0].x0 + att[0].L, dRef = Math.max(top.d, ...att.map(b => b.d)), R = dRef / 2, A = Math.PI * R * R;
     const sc = d => (d / dRef) ** 2;
     const comps = top.comps.map(p => ({ cna: p.cna * sc(top.d), x: p.x, fin: p.fin, rg2: p.fin ? top.rg2 : 0 }));
@@ -649,7 +703,7 @@ function buildStack(top) {
   };
   const s0 = segs[0], Itot = stages.reduce((a, b) => a + b.Itot, top.Itot);
   return {
-    ...s0, c: top.c, top, stack: { stages, segs, ign, sep, topIgn }, warn, topIgn,
+    ...s0, c: top.c, top, orig, stack: { stages, segs, ign, sep, topIgn }, warn, topIgn,
     massAt: massAtG, thrust: thrustG, cdaAt, pts: allPts, Itot, Fmax: Math.max(top.Fmax, ...stages.map(b => Math.max(...b.pts.map(p => p[1])))),
     tb: topIgn + top.tb, tIgn: s0.tIgn, burnTime: top.burnTime, tEnd: topIgn + top.tEnd, opTimeCurve: top.opTimeCurve,
     prop: stages.reduce((a, b) => a + b.prop, top.prop), massDropped: stages.reduce((a, b) => a + b.mDry, 0),
@@ -666,7 +720,7 @@ function stageTable(M) {
   };
   stages.forEach((b, i) => {
     const avg = b.tb > 0 ? b.Itot / b.tb : 0, n = stages.length - i + 1;
-    row(`${b.no}段目 点火時（${n} 段積み）`, segs[i], 0, avg, b.no);
+    row(i === 0 ? `1段目 点火時（打上げ時の全体）` : `${b.no}段目 点火時（${n} 段分）`, segs[i], 0, avg, b.no);
     row(`${b.no}段目 燃焼終了時`, segs[i], b.tb, 0, b.no);
   });
   const no = stages.length + 1, avgT = T.tb > 0 ? T.Itot / T.tb : 0;
